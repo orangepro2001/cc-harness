@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CC Harness</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- login -->
+<main id="login" hidden>
+  <form id="login-form">
+    <h1>CC Harness</h1>
+    <input id="login-user" autocomplete="username" placeholder="用户名" value="tony" required>
+    <input id="login-pass" type="password" autocomplete="current-password" placeholder="密码" required>
+    <button type="submit">登录</button>
+    <p id="login-err" class="err"></p>
+  </form>
+</main>
+
+<!-- app -->
+<div id="app" hidden>
+  <aside id="side">
+    <header>
+      <b>会话</b>
+      <span id="who"></span>
+      <button id="btn-logout" title="退出登录">退出</button>
+    </header>
+    <button id="btn-new" class="primary">＋ 新建会话</button>
+    <ul id="list"></ul>
+  </aside>
+
+  <section id="main">
+    <header id="bar">
+      <button id="btn-menu" title="会话列表">☰</button>
+      <div id="title"></div>
+      <span id="status" class="chip"></span>
+      <select id="mode" title="权限模式"></select>
+      <button id="btn-int" title="中断当前回合">中断</button>
+      <button id="btn-stop" title="结束后台进程（会话可恢复）">停止进程</button>
+      <button id="btn-del" title="删除会话">删除</button>
+    </header>
+    <div id="meta"></div>
+    <div id="log"></div>
+    <form id="composer">
+      <textarea id="input" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+      <button type="submit" class="primary">发送</button>
+    </form>
+    <div id="empty">选择或新建一个会话</div>
+  </section>
+</div>
+
+<!-- new session dialog -->
+<dialog id="dlg-new">
+  <form method="dialog" id="new-form">
+    <h3>新建会话</h3>
+    <label>标题（可空）<input id="n-title" maxlength="100"></label>
+    <label>工作目录
+      <span class="row"><input id="n-cwd" placeholder="留空 = 个人工作区" autocomplete="off"><button type="button" id="n-pick">选择…</button></span>
+    </label>
+    <label>模型
+      <select id="n-model">
+        <option value="">默认</option><option>opus</option><option>sonnet</option><option>haiku</option><option>fable</option>
+      </select>
+    </label>
+    <label>权限模式<select id="n-mode"></select></label>
+    <p id="new-err" class="err"></p>
+    <menu>
+      <button value="cancel" type="button" id="n-cancel">取消</button>
+      <button value="ok" type="submit" class="primary">创建</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- directory picker -->
+<dialog id="dlg-dir">
+  <h3>选择工作目录</h3>
+  <div id="d-path" class="crumbs"></div>
+  <ul id="d-list"></ul>
+  <p id="d-err" class="err"></p>
+  <label class="chk"><input type="checkbox" id="d-hidden"> 显示隐藏目录</label>
+  <menu>
+    <button type="button" id="d-mk">新建文件夹</button>
+    <button type="button" id="d-cancel">取消</button>
+    <button type="button" id="d-ok" class="primary">选择此目录</button>
+  </menu>
+</dialog>
+
+<script src="/app.js"></script>
+</body>
+</html>

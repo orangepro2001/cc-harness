@@ -1,0 +1,18 @@
+[Unit]
+Description=CC Harness - resident Claude Code web service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/cc-harness/env
+ExecStart=%h/.local/bin/cc-harness
+Restart=always
+RestartSec=3
+# claude child processes live in this cgroup and are stopped with the service
+KillMode=control-group
+TimeoutStopSec=15
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
