@@ -1,0 +1,239 @@
+package com.cchharness.core
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.junit.AfterClass
+import org.junit.Assume.assumeTrue
+import org.junit.BeforeClass
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.ServerSocket
+import java.net.URL
+import java.nio.file.Files
+import java.util.concurrent.TimeUnit
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+
+/**
+ * Drives the real cc-harness server (built from this checkout) with the Go test
+ * binary standing in for the `claude` CLI, so the whole Kotlin stack is exercised
+ * against the actual wire protocol without spending any model quota.
+ */
+class GoServerE2ETest {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    @AfterTest
+    fun cancelScope() = scope.cancel()
+
+    private suspend fun <T> StateFlow<T>.await(what: String, pred: (T) -> Boolean): T =
+        try {
+            withTimeout(15_000) { first(pred) }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            throw AssertionError("timed out waiting for $what; last state: $value")
+        }
+
+    private suspend fun newClient(): HarnessClient =
+        HarnessClient(baseUrl).also { it.login("tony", PASSWORD) }
+
+    private suspend fun newSession(c: HarnessClient, title: String = "t", cwd: String = ""): SessionController {
+        val s = c.createSession(CreateSession(title = title, cwd = cwd))
+        return SessionController(c, s.id, publishIntervalMs = 10).also { it.start(scope) }
+    }
+
+    @Test
+    fun loginRules() = runBlocking {
+        val bad = HarnessClient(baseUrl)
+        assertFailsWith<AuthException> { bad.login("tony", "wrong") }
+        assertFailsWith<AuthException> { bad.me() } // no token
+        val good = newClient()
+        val me = good.me()
+        assertEquals("tony", me.user)
+        assertTrue(me.workspace.isNotEmpty())
+        assertEquals(listOf(shared.canonicalPath), me.roots.map { File(it).canonicalPath })
+    }
+
+    @Test
+    fun chatTurnStreamsIntoState() = runBlocking {
+        val c = newClient()
+        val ctl = newSession(c, "chat")
+        ctl.send("hello")
+        val s = ctl.state.await("assistant echo") { st -> st.items.any { it is AssistantText && it.text == "echo: hello" } && st.status == "idle" }
+        assertEquals("hello", s.items.filterIsInstance<UserMessage>().single().text)
+        assertEquals(Connection.Live, ctl.connection.value)
+        assertTrue(s.items.any { it is Note && it.text.contains("后台进程已启动") })
+        assertTrue(s.lastSeq > 0)
+        // the session list reflects the title derived from the conversation
+        assertEquals("chat", c.listSessions().single { it.id == ctl.sessionId }.title)
+    }
+
+    @Test
+    fun permissionRoundTripWithRemember() = runBlocking {
+        val c = newClient()
+        val ctl = newSession(c)
+        ctl.send("TOOL please")
+        val waiting = ctl.state.await("pending permission") { it.pendingPermissions.isNotEmpty() && it.status == "awaiting_permission" }
+        val p = waiting.pendingPermissions.single()
+        assertEquals("Write", p.toolName)
+        assertTrue(p.canRemember)
+
+        ctl.allow(p.requestId, remember = true)
+        val done = ctl.state.await("decision") { st -> st.items.any { it is AssistantText && it.text.contains("decision") } && st.status == "idle" }
+        val decision = done.items.filterIsInstance<AssistantText>().first { it.text.contains("decision") }.text
+        assertTrue(decision.contains("allow") && decision.contains("updatedPermissions"), decision)
+        assertEquals(PermState.AllowedRemembered, done.items.filterIsInstance<PermissionItem>().single().state)
+    }
+
+    @Test
+    fun denyReachesTheAgent() = runBlocking {
+        val c = newClient()
+        val ctl = newSession(c)
+        ctl.send("TOOL deny me")
+        val p = ctl.state.await("pending") { it.pendingPermissions.isNotEmpty() }.pendingPermissions.single()
+        ctl.deny(p.requestId, "not today")
+        val s = ctl.state.await("denied decision") { st -> st.items.any { it is AssistantText && it.text.contains("deny") } }
+        assertEquals(PermState.Denied, s.items.filterIsInstance<PermissionItem>().single().state)
+        assertTrue(s.items.filterIsInstance<AssistantText>().any { it.text.contains("not today") })
+    }
+
+    @Test
+    fun anotherControllerReplaysTheWholeHistory() = runBlocking {
+        val c = newClient()
+        val first = newSession(c)
+        first.send("one")
+        first.state.await("first turn") { st -> st.items.any { it is AssistantText && it.text == "echo: one" } && st.status == "idle" }
+        first.send("two")
+        val original = first.state.await("second turn") { st -> st.items.any { it is AssistantText && it.text == "echo: two" } && st.status == "idle" }
+        first.stop()
+
+        // a fresh client (as after an app restart) rebuilds the identical conversation from the log
+        val replay = SessionController(newClient(), first.sessionId, publishIntervalMs = 10).also { it.start(scope) }
+        val rebuilt = replay.state.await("replay") { it.lastSeq >= original.lastSeq }
+        assertEquals(original.items.map { it::class to (it as? AssistantText)?.text }, rebuilt.items.map { it::class to (it as? AssistantText)?.text })
+    }
+
+    @Test
+    fun interruptReturnsToIdleAndStopKillsTheProcess() = runBlocking {
+        val c = newClient()
+        val ctl = newSession(c)
+        ctl.send("SLEEP forever")
+        ctl.state.await("busy") { it.status == "busy" }
+        ctl.interrupt()
+        val s = ctl.state.await("idle after interrupt") { it.status == "idle" }
+        assertTrue(s.items.any { it is Note && it.isError && it.text.contains("error_during_execution") })
+
+        ctl.stopProcess()
+        ctl.state.await("stopped") { it.status == "stopped" }
+        assertEquals("stopped", c.getSession(ctl.sessionId).status)
+    }
+
+    @Test
+    fun modeCanBeChangedAndSessionDeleted() = runBlocking {
+        val c = newClient()
+        val ctl = newSession(c)
+        ctl.setPermissionMode("plan")
+        assertEquals("plan", c.getSession(ctl.sessionId).permissionMode)
+        ctl.state.await("mode event") { it.permissionMode == "plan" }
+        c.updateSession(ctl.sessionId, title = "renamed")
+        assertEquals("renamed", c.getSession(ctl.sessionId).title)
+        c.deleteSession(ctl.sessionId)
+        assertEquals(404, assertFailsWith<ApiException> { c.getSession(ctl.sessionId) }.code)
+    }
+
+    @Test
+    fun directoryBrowsingAndWorkingDirectorySelection() = runBlocking {
+        val c = newClient()
+        File(shared, "projA/src").mkdirs()
+        File(shared, ".secret").mkdirs()
+
+        val roots = c.listDirs(null)
+        assertEquals("", roots.path)
+        assertEquals(2, roots.entries.size) // personal workspace + HARNESS_ROOTS
+        val sharedRoot = roots.entries.single { File(it.path).canonicalPath == shared.canonicalPath }
+
+        val top = c.listDirs(sharedRoot.path)
+        assertEquals("", top.parent) // top of a root goes back to the root list
+        assertTrue(top.entries.any { it.name == "projA" })
+        assertTrue(top.entries.none { it.name == ".secret" })
+        assertTrue(c.listDirs(sharedRoot.path, hidden = true).entries.any { it.name == ".secret" })
+
+        val made = c.makeDir(sharedRoot.path, "created-from-android")
+        assertTrue(File(made).isDirectory)
+
+        val src = File(shared, "projA/src").canonicalPath
+        val session = c.createSession(CreateSession(title = "in-dir", cwd = src))
+        assertEquals(src, session.cwd)
+
+        assertEquals(403, assertFailsWith<ApiException> { c.listDirs("/etc") }.code)
+        assertEquals(400, assertFailsWith<ApiException> { c.createSession(CreateSession(cwd = "/etc")) }.code)
+        assertEquals(400, assertFailsWith<ApiException> { c.makeDir(sharedRoot.path, "../escape") }.code)
+    }
+
+    companion object {
+        private const val PASSWORD = "512557"
+        private lateinit var tmp: File
+        private lateinit var shared: File
+        private lateinit var baseUrl: String
+        private var server: Process? = null
+
+        private fun run(dir: File, vararg cmd: String) {
+            val p = ProcessBuilder(*cmd).directory(dir).redirectErrorStream(true).start()
+            val out = p.inputStream.bufferedReader().readText()
+            check(p.waitFor(5, TimeUnit.MINUTES) && p.exitValue() == 0) { "${cmd.joinToString(" ")} failed:\n$out" }
+        }
+
+        @BeforeClass
+        @JvmStatic
+        fun startServer() {
+            val repo = File(System.getProperty("harness.repo"))
+            val goOk = runCatching { ProcessBuilder("go", "version").redirectErrorStream(true).start().waitFor() == 0 }.getOrDefault(false)
+            assumeTrue("go toolchain not available, skipping end-to-end tests", goOk && File(repo, "main.go").exists())
+
+            tmp = Files.createTempDirectory("cch-e2e").toFile()
+            shared = File(tmp, "shared").also { it.mkdirs() }
+            run(repo, "go", "build", "-o", File(tmp, "cc-harness").path, ".")
+            run(repo, "go", "test", "-c", "-o", File(tmp, "mock.test").path, ".")
+
+            val port = ServerSocket(0).use { it.localPort }
+            baseUrl = "http://127.0.0.1:$port"
+            server = ProcessBuilder(File(tmp, "cc-harness").path).apply {
+                environment().apply {
+                    put("HARNESS_PASSWORD", PASSWORD)
+                    put("HARNESS_BIND", "127.0.0.1")
+                    put("HARNESS_PORT", port.toString())
+                    put("HARNESS_DATA", File(tmp, "data").path)
+                    put("HARNESS_ROOTS", shared.path)
+                    put("HARNESS_CLAUDE_BIN", File(tmp, "mock.test").path)
+                    put("MOCK_CLAUDE", "1")
+                }
+                redirectErrorStream(true)
+                redirectOutput(File(tmp, "server.log"))
+            }.start()
+
+            repeat(100) {
+                val up = runCatching {
+                    (URL("$baseUrl/api/health").openConnection() as HttpURLConnection).responseCode == 200
+                }.getOrDefault(false)
+                if (up) return
+                Thread.sleep(100)
+            }
+            error("server did not start:\n${File(tmp, "server.log").readText()}")
+        }
+
+        @AfterClass
+        @JvmStatic
+        fun stopServer() {
+            server?.destroy()
+            server?.waitFor(5, TimeUnit.SECONDS)
+            if (::tmp.isInitialized) tmp.deleteRecursively()
+        }
+    }
+}

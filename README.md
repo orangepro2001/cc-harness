@@ -48,6 +48,10 @@ curl -u tony:PASSWORD -X POST http://HOST:8765/api/sessions -d '{"title":"demo"}
 - 子进程环境会剥离所有 `HARNESS_*` 变量，避免密码泄漏给 agent 的 shell。
 - `bypassPermissions` 默认禁用，需 `HARNESS_ALLOW_BYPASS=1`。
 
+## Android 客户端
+
+`android/`（Kotlin + Compose，见 `android/README.md`）：会话、聊天、权限审批、工作目录选择。
+
 ## 开发
 
 ```sh
