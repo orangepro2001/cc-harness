@@ -9,7 +9,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -44,15 +46,18 @@ fun ConnectScreen(
     Column(
         Modifier
             .fillMaxSize()
+            .systemBarsPadding()
             .imePadding()
             .verticalScroll(rememberScrollState())
             .padding(24.dp),
         verticalArrangement = Arrangement.Center,
     ) {
+        Text("✻", color = Harness.colors.brand, style = MaterialTheme.typography.headlineMedium)
         Text("CC Harness", style = MaterialTheme.typography.headlineMedium)
-        Text("连接到常驻的 Claude Code 服务", style = MaterialTheme.typography.bodyMedium)
+        Text("连接到常驻的 Claude Code 服务", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(24.dp))
         OutlinedTextField(
+            shape = RoundedCornerShape(12.dp),
             value = url,
             onValueChange = { url = it },
             label = { Text("服务器地址") },
@@ -63,6 +68,7 @@ fun ConnectScreen(
         )
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(
+            shape = RoundedCornerShape(12.dp),
             value = user,
             onValueChange = { user = it },
             label = { Text("用户名") },
@@ -71,6 +77,7 @@ fun ConnectScreen(
         )
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(
+            shape = RoundedCornerShape(12.dp),
             value = password,
             onValueChange = { password = it },
             label = { Text("密码") },
@@ -87,7 +94,8 @@ fun ConnectScreen(
         Button(
             onClick = { onConnect(url, user, password) },
             enabled = ready,
-            modifier = Modifier.fillMaxWidth().testTag("connect-button"),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth().height(50.dp).testTag("connect-button"),
         ) {
             if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Text("连接")
         }

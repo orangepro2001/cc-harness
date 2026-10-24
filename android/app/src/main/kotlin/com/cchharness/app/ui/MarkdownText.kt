@@ -1,6 +1,7 @@
 package com.cchharness.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -41,7 +42,7 @@ private fun List<Span>.annotated(linkColor: Color, codeBackground: Color): Annot
                     TextLinkStyles(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)),
                 ),
             ) { append(s.text) }
-            s.code -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground)) { append(s.text) }
+            s.code -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground, color = linkColor)) { append(s.text) }
             else -> withStyle(
                 SpanStyle(
                     fontWeight = if (s.bold) FontWeight.Bold else null,
@@ -56,7 +57,8 @@ private fun List<Span>.annotated(linkColor: Color, codeBackground: Color): Annot
 fun MarkdownText(text: String, modifier: Modifier = Modifier) {
     val blocks = remember(text) { parseMarkdown(text) }
     val linkColor = MaterialTheme.colorScheme.primary
-    val codeBg = MaterialTheme.colorScheme.surfaceVariant
+    val codeBg = Harness.colors.codeBackground
+    val codeFg = Harness.colors.codeText
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         for (b in blocks) {
             when (b) {
@@ -70,15 +72,22 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier) {
                     b.text,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
+                    color = codeFg,
+                    lineHeight = 17.sp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(codeBg, RoundedCornerShape(6.dp))
+                        .background(codeBg, RoundedCornerShape(8.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
                         .horizontalScroll(rememberScrollState())
-                        .padding(8.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                 )
-                is MdBlock.ListItem -> Row {
-                    Text(if (b.ordered) "${b.index}. " else "• ", style = MaterialTheme.typography.bodyMedium)
-                    Text(b.spans.annotated(linkColor, codeBg), style = MaterialTheme.typography.bodyMedium)
+                is MdBlock.ListItem -> Row(Modifier.padding(start = 4.dp)) {
+                    Text(
+                        if (b.ordered) "${b.index}. " else "• ",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(b.spans.annotated(linkColor, codeBg), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                 }
             }
         }

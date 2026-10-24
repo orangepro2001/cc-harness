@@ -78,7 +78,14 @@ function md(src) {
       i++;
       while (i < lines.length && !/^```\s*$/.test(lines[i])) buf.push(lines[i++]);
       i++;
-      out.push("<pre><code>" + esc(buf.join("\n")) + "</code></pre>");
+      out.push('<pre><button type="button" class="cp">复制</button><code>' + esc(buf.join("\n")) + "</code></pre>");
+      continue;
+    }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(ln)) { out.push("<hr>"); i++; continue; }
+    if (/^>\s?/.test(ln)) {
+      const q = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) q.push(lines[i++].replace(/^>\s?/, ""));
+      out.push("<blockquote>" + inline(q.join("\n")).replace(/\n/g, "<br>") + "</blockquote>");
       continue;
     }
     const h = ln.match(/^(#{1,3})\s+(.*)$/);
@@ -95,7 +102,7 @@ function md(src) {
     }
     if (ln.trim() === "") { i++; continue; }
     const para = [];
-    while (i < lines.length && lines[i].trim() !== "" && !/^```/.test(lines[i]) && !/^#{1,3}\s/.test(lines[i]) &&
+    while (i < lines.length && lines[i].trim() !== "" && !/^```/.test(lines[i]) && !/^#{1,3}\s/.test(lines[i]) && !/^>\s?/.test(lines[i]) &&
       !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i])) para.push(lines[i++]);
     out.push("<p>" + inline(para.join("\n")).replace(/\n/g, "<br>") + "</p>");
   }
@@ -106,12 +113,23 @@ function nearBottom() {
   const l = $("log");
   return l.scrollHeight - l.scrollTop - l.clientHeight < 80;
 }
+function toBottom() { $("log").scrollTop = $("log").scrollHeight; }
 function add(node) {
   const stick = nearBottom();
-  $("log").appendChild(node);
-  if (stick) $("log").scrollTop = $("log").scrollHeight;
+  $("wrap").appendChild(node);
+  if (stick) toBottom();
+  else $("jump").hidden = false;
   return node;
 }
+// Copy buttons on fenced code blocks (event delegation, works for streamed output too).
+$("wrap").addEventListener("click", async (e) => {
+  const b = e.target.closest(".cp");
+  if (!b) return;
+  try { await navigator.clipboard.writeText(b.parentElement.querySelector("code").textContent); b.textContent = "已复制"; } catch (_) { b.textContent = "失败"; }
+  setTimeout(() => { b.textContent = "复制"; }, 1500);
+});
+$("log").addEventListener("scroll", () => { if (nearBottom()) $("jump").hidden = true; });
+$("jump").onclick = () => { toBottom(); $("jump").hidden = true; };
 
 function summarize(name, input) {
   if (!input) return "";
@@ -127,10 +145,15 @@ async function loadSessions() {
   } catch (_) { return; }
   const ul = $("list");
   ul.textContent = "";
+  if (!sessions.length) ul.appendChild(el("li", "none", "还没有会话"));
   for (const s of sessions) {
     const li = el("li", s.id === (cur && cur.id) ? "cur" : "");
-    li.appendChild(el("div", "t", s.title || "(未命名)"));
-    li.appendChild(el("div", "s", (STATUS[s.status] || s.status) + " · " + new Date(s.updatedAt).toLocaleString()));
+    li.appendChild(el("span", "dot " + s.status));
+    const m = el("div", "m");
+    m.appendChild(el("div", "t", s.title || "(未命名)"));
+    m.appendChild(el("div", "s", (STATUS[s.status] || s.status) + " · " + ago(s.updatedAt)));
+    li.appendChild(m);
+    li.title = s.cwd;
     li.onclick = () => { openSession(s.id); document.body.classList.remove("menu"); };
     ul.appendChild(li);
   }
@@ -150,7 +173,8 @@ function setStatus(st) {
 
 function renderBar() {
   $("title").textContent = cur.title || "(未命名)";
-  $("meta").textContent = cur.cwd + (cur.model ? " · " + cur.model : "") + " · " + cur.id;
+  $("meta").textContent = cur.cwd + (cur.model ? " · " + cur.model : "");
+  $("meta").title = cur.cwd + " · " + cur.id;
   $("mode").value = cur.permissionMode;
   setModel($("model"), cur.model);
   $("effort").value = cur.effort || "";
@@ -186,7 +210,8 @@ function openSession(id) {
   commands = [];
   hideSlash();
   loadCommands(id);
-  $("log").textContent = "";
+  $("wrap").textContent = "";
+  $("jump").hidden = true;
   $("empty").hidden = true;
   renderBar();
   loadSessions();
@@ -289,7 +314,7 @@ function onDelta(e) {
       renderQueued = true;
       requestAnimationFrame(() => {
         renderQueued = false;
-        if (live) { const stick = nearBottom(); live.el.innerHTML = md(live.text); if (stick) $("log").scrollTop = $("log").scrollHeight; }
+        if (live) { const stick = nearBottom(); live.el.innerHTML = md(live.text); if (stick) toBottom(); }
       });
     }
   }
@@ -302,15 +327,21 @@ function onAssistant(d) {
     if (b.type === "text" && b.text && b.text.trim()) {
       add(el("div", "msg asst")).innerHTML = md(b.text);
     } else if (b.type === "thinking" && b.thinking) {
-      const det = el("details", "tool");
-      det.appendChild(el("summary", "", "思考"));
-      det.appendChild(el("pre", "", b.thinking));
+      const det = el("details", "tool think");
+      const sm = el("summary");
+      sm.appendChild(el("b", "", "思考"));
+      sm.appendChild(el("i", "", "›"));
+      det.appendChild(sm);
+      const body = el("div", "body");
+      body.appendChild(el("pre", "", b.thinking));
+      det.appendChild(body);
       add(det);
     } else if (b.type === "tool_use") {
-      const det = el("details", "tool");
+      const det = el("details", "tool run");
       const sm = el("summary");
       sm.appendChild(el("b", "", b.name));
       sm.appendChild(el("span", "", summarize(b.name, b.input)));
+      sm.appendChild(el("i", "", "›"));
       det.appendChild(sm);
       const body = el("div", "body");
       body.appendChild(el("pre", "", JSON.stringify(b.input, null, 2)));
@@ -318,6 +349,7 @@ function onAssistant(d) {
       body.appendChild(res);
       det.appendChild(body);
       tools[b.id] = res;
+      res.card = det;
       add(det);
     }
   }
@@ -330,6 +362,8 @@ function onToolResults(d) {
     if (b.type !== "tool_result") continue;
     const res = tools[b.tool_use_id];
     if (!res) continue;
+    res.card.classList.remove("run");
+    res.card.classList.add(b.is_error ? "err" : "ok");
     let t = b.content;
     if (Array.isArray(t)) t = t.map((x) => (x.type === "text" ? x.text : "[" + x.type + "]")).join("\n");
     t = String(t == null ? "" : t);
@@ -348,7 +382,7 @@ function onResult(d) {
     const parts = [];
     if (d.duration_ms) parts.push((d.duration_ms / 1000).toFixed(1) + "s");
     if (typeof d.total_cost_usd === "number") parts.push("$" + d.total_cost_usd.toFixed(4));
-    add(el("div", "note", parts.join(" · ")));
+    if (parts.length) add(el("div", "note res", parts.join(" · ")));
   }
 }
 
@@ -430,6 +464,7 @@ async function send() {
   const ids = atts.map((a) => a.id);
   const keep = atts;
   $("input").value = "";
+  autosize();
   atts = [];
   renderAtts();
   hideSlash();
@@ -437,6 +472,7 @@ async function send() {
     await api("POST", "/api/sessions/" + sid + "/messages", ids.length ? { text: t, attachments: ids } : { text: t });
   } catch (e) {
     $("input").value = t;
+    autosize();
     atts = keep;
     renderAtts();
     add(el("div", "note bad", "发送失败: " + e.message));
@@ -707,7 +743,19 @@ $("d-mk").onclick = async () => {
 };
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
-$("input").addEventListener("input", () => { slashSel = 0; showSlash(); });
+function autosize() {
+  const t = $("input");
+  t.style.height = "auto";
+  t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.4) + "px";
+}
+$("input").addEventListener("input", () => { slashSel = 0; showSlash(); autosize(); });
+$("btn-new2").onclick = () => $("btn-new").click();
+$("scrim").onclick = () => document.body.classList.remove("menu");
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && cur && !$("btn-int").disabled && !document.querySelector("dialog[open]") && $("slash").hidden) {
+    api("POST", "/api/sessions/" + cur.id + "/interrupt", {}).catch(() => {});
+  }
+});
 $("input").addEventListener("keydown", (e) => {
   const sl = !$("slash").hidden ? slashMatches() : [];
   if (sl.length) {
@@ -733,7 +781,10 @@ $("input").addEventListener("paste", (e) => {
   if (files.length) { e.preventDefault(); addFiles(files); }
 });
 for (const t of ["dragenter", "dragover"]) $("main").addEventListener(t, (e) => { if (cur && e.dataTransfer && [...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
+$("main").addEventListener("dragenter", (e) => { if (cur && e.dataTransfer && [...e.dataTransfer.types].includes("Files")) $("main").classList.add("drop"); });
+$("main").addEventListener("dragleave", (e) => { if (e.target === $("main") || !$("main").contains(e.relatedTarget)) $("main").classList.remove("drop"); });
 $("main").addEventListener("drop", (e) => {
+  $("main").classList.remove("drop");
   if (!cur || !e.dataTransfer || !e.dataTransfer.files.length) return;
   e.preventDefault();
   addFiles([...e.dataTransfer.files]);
@@ -751,7 +802,7 @@ $("btn-del").onclick = async () => {
   closeStream();
   await api("DELETE", "/api/sessions/" + cur.id).catch((e) => alert(e.message));
   cur = null;
-  $("log").textContent = "";
+  $("wrap").textContent = "";
   $("empty").hidden = false;
   location.hash = "";
   loadSessions();

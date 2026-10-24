@@ -2,26 +2,31 @@ package com.cchharness.app.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Row
-import com.cchharness.app.UpdateState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,9 +34,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cchharness.app.UpdateState
 import com.cchharness.core.SessionInfo
 import com.cchharness.core.Usage
 
@@ -64,27 +71,44 @@ fun SessionListScreen(
     onImport: () -> Unit = {},
 ) {
     var confirmDelete by remember { mutableStateOf<SessionInfo?>(null) }
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("会话 · $user") },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                title = {
+                    Column {
+                        BrandTitle()
+                        if (user.isNotBlank()) Text(user, style = MaterialTheme.typography.labelSmall, color = muted)
+                    }
+                },
                 actions = {
-                    TextButton(onClick = onRefresh, modifier = Modifier.testTag("refresh")) { Text("刷新") }
-                    TextButton(onClick = onLogout, modifier = Modifier.testTag("logout")) { Text("退出") }
+                    TextButton(onClick = onRefresh, modifier = Modifier.testTag("refresh")) { Text("刷新", color = muted) }
+                    TextButton(onClick = onLogout, modifier = Modifier.testTag("logout")) { Text("退出", color = muted) }
                 },
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(onClick = onNew, modifier = Modifier.testTag("new-session")) { Text("＋ 新建会话") }
+            ExtendedFloatingActionButton(
+                onClick = onNew,
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.testTag("new-session"),
+            ) { Text("＋ 新建会话") }
         },
     ) { inner ->
         Column(Modifier.padding(inner).fillMaxSize()) {
             if (notice != null) {
                 Text(
                     notice,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.fillMaxWidth().clickable(onClick = onDismissNotice).padding(12.dp).testTag("notice"),
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                        .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(10.dp))
+                        .clickable(onClick = onDismissNotice).padding(12.dp).testTag("notice"),
                 )
             }
             val offered = update is UpdateState.Available || update is UpdateState.Downloading ||
@@ -93,43 +117,56 @@ fun SessionListScreen(
                 Text(
                     "有新版本可更新,点这里查看",
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primaryContainer)
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                        .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(10.dp))
                         .clickable(onClick = onShowUpdate).padding(12.dp).testTag("update-banner"),
                 )
             }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AssistChip(
+                    onClick = onImport,
+                    label = { Text("接管本机会话") },
+                    colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                    border = null,
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.testTag("import-local"),
+                )
+                AssistChip(
+                    onClick = onCheckUpdate,
+                    enabled = update !is UpdateState.Checking,
+                    label = { Text(if (update is UpdateState.Checking) "检查中…" else "检查更新") },
+                    colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                    border = null,
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.testTag("check-update"),
+                )
                 Text(
                     if (versionName.isNotBlank()) "版本 $versionName" else "",
                     style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.weight(1f).testTag("app-version"),
+                    color = muted,
+                    modifier = Modifier.testTag("app-version"),
                 )
-                TextButton(onClick = onImport, modifier = Modifier.testTag("import-local")) { Text("接管本机会话") }
-                TextButton(onClick = onCheckUpdate, enabled = update !is UpdateState.Checking, modifier = Modifier.testTag("check-update")) {
-                    Text(if (update is UpdateState.Checking) "检查中…" else "检查更新")
-                }
             }
-            UsagePanel(usage, usageError)
+            UsagePanel(usage, usageError, Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
             if (sessions.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("还没有会话,点右下角新建", style = MaterialTheme.typography.bodyMedium)
+                Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("✻", color = Harness.colors.brand, style = MaterialTheme.typography.headlineMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text("还没有会话,点右下角新建", style = MaterialTheme.typography.bodyMedium, color = muted)
+                    Spacer(Modifier.height(96.dp))
                 }
             } else {
-                LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Top) {
-                    items(sessions, key = { it.id }) { s ->
-                        ListItem(
-                            headlineContent = {
-                                Text(s.title.ifBlank { "(未命名)" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            },
-                            supportingContent = {
-                                Text("${statusLabel(s.status)} · ${s.cwd}", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            },
-                            trailingContent = {
-                                TextButton(onClick = { confirmDelete = s }, modifier = Modifier.testTag("delete-${s.id}")) { Text("删除") }
-                            },
-                            modifier = Modifier.clickable { onOpen(s.id) }.testTag("session-${s.id}"),
-                        )
-                        HorizontalDivider()
-                    }
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 96.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    items(sessions, key = { it.id }) { s -> SessionRow(s, onOpen, onAskDelete = { confirmDelete = s }) }
                 }
             }
         }
@@ -149,9 +186,39 @@ fun SessionListScreen(
                         onDelete(s.id)
                     },
                     modifier = Modifier.testTag("confirm-delete"),
-                ) { Text("删除") }
+                ) { Text("删除", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("取消") } },
         )
+    }
+}
+
+@Composable
+private fun SessionRow(s: SessionInfo, onOpen: (String) -> Unit, onAskDelete: () -> Unit) {
+    val live = s.status == "busy" || s.status == "awaiting_permission"
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable { onOpen(s.id) }
+            .padding(start = 12.dp, top = 10.dp, bottom = 10.dp, end = 2.dp)
+            .testTag("session-${s.id}"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Dot(statusColor(s.status), pulse = live, size = 10.dp)
+        Column(Modifier.weight(1f)) {
+            Text(s.title.ifBlank { "(未命名)" }, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                "${statusLabel(s.status)} · ${s.cwd}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        TextButton(onClick = onAskDelete, modifier = Modifier.testTag("delete-${s.id}")) {
+            Text("删除", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }

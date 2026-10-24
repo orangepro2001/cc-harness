@@ -7,6 +7,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.InputChipDefaults
@@ -50,6 +62,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -97,19 +112,39 @@ fun ChatScreen(
     val active = state.status == "busy" || state.status == "awaiting_permission"
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                navigationIcon = { TextButton(onClick = onBack, modifier = Modifier.testTag("chat-back")) { Text("←") } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                navigationIcon = {
+                    TextButton(onClick = onBack, modifier = Modifier.testTag("chat-back")) {
+                        Text("‹", fontSize = 30.sp, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                },
                 title = {
                     Column {
-                        Text(title.ifBlank { "(未命名)" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(cwd, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            title.ifBlank { "(未命名)" },
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            cwd,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = Mono,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 },
                 actions = {
-                    AssistChip(onClick = {}, label = { Text(statusLabel(state.status)) }, modifier = Modifier.testTag("chat-status"))
+                    StatusBadge(state.status, Modifier.testTag("chat-status"))
                     Box {
-                        TextButton(onClick = { menuOpen = true }, modifier = Modifier.testTag("chat-menu")) { Text("⋮") }
+                        TextButton(onClick = { menuOpen = true }, modifier = Modifier.testTag("chat-menu")) {
+                            Text("⋮", fontSize = 20.sp, color = MaterialTheme.colorScheme.onSurface)
+                        }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                             DropdownMenuItem(
                                 text = { Text("中断当前回合") },
@@ -153,41 +188,40 @@ fun ChatScreen(
             )
         },
     ) { inner ->
-        Column(Modifier.padding(inner).fillMaxSize().imePadding()) {
+        Column(Modifier.padding(inner).consumeWindowInsets(inner).fillMaxSize().imePadding()) {
             if (connection !is Connection.Live) ConnectionBanner(connection)
             if (notice != null) {
-                Text(
-                    notice,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).testTag("chat-notice"),
-                )
-                TextButton(onClick = onDismissNotice) { Text("知道了") }
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+                        .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(10.dp))
+                        .padding(start = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        notice,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f).padding(vertical = 8.dp).testTag("chat-notice"),
+                    )
+                    TextButton(onClick = onDismissNotice) { Text("知道了") }
+                }
             }
             MessageList(state, onAllow, onDeny, onAnswer, loadAttachment, Modifier.weight(1f))
             if (suggestions.isNotEmpty()) SlashSuggestions(suggestions) { draft = "/$it " }
-            if (drafts.isNotEmpty()) DraftChips(drafts, onRemoveDraft)
-            Row(
-                Modifier.fillMaxWidth().padding(8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                OutlinedButton(onClick = onPickFiles, modifier = Modifier.testTag("chat-attach")) { Text("＋") }
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    placeholder = { Text("输入消息,/ 调出命令") },
-                    maxLines = 5,
-                    modifier = Modifier.weight(1f).testTag("chat-input"),
-                )
-                Button(
-                    onClick = {
-                        onSend(draft)
-                        draft = ""
-                    },
-                    enabled = (draft.isNotBlank() || drafts.isNotEmpty()) && !uploading,
-                    modifier = Modifier.testTag("chat-send"),
-                ) { Text("发送") }
-            }
+            Composer(
+                draft = draft,
+                onDraft = { draft = it },
+                drafts = drafts,
+                active = active,
+                canSend = (draft.isNotBlank() || drafts.isNotEmpty()) && !uploading,
+                onSend = {
+                    onSend(draft)
+                    draft = ""
+                },
+                onInterrupt = onInterrupt,
+                onPickFiles = onPickFiles,
+                onRemoveDraft = onRemoveDraft,
+            )
         }
     }
 
@@ -225,9 +259,11 @@ fun slashSuggestions(draft: String, commands: List<String>, limit: Int = 30): Li
 @Composable
 private fun SlashSuggestions(items: List<String>, onPick: (String) -> Unit) {
     Surface(
-        tonalElevation = 3.dp,
-        shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).heightIn(max = 220.dp).testTag("slash-list"),
+        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shadowElevation = 4.dp,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).heightIn(max = 220.dp).testTag("slash-list"),
     ) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             items.forEach { c ->
@@ -282,7 +318,8 @@ private fun ConnectionBanner(connection: Connection) {
         color = MaterialTheme.colorScheme.onErrorContainer,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .padding(horizontal = 16.dp, vertical = 6.dp)
             .testTag("chat-connection"),
         style = MaterialTheme.typography.labelMedium,
     )
@@ -309,15 +346,108 @@ private fun MessageList(
         if (stick && total > 0) listState.scrollToItem(total - 1)
     }
 
-    LazyColumn(
-        modifier.fillMaxWidth().testTag("chat-list"),
-        state = listState,
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-    ) {
-        items(state.items, key = { it.key }) { item -> ChatItemView(item, onAllow, onDeny, onAnswer, loadAttachment) }
-        if (state.liveText.isNotEmpty()) {
-            item(key = "live") { AssistantBubble(state.liveText, live = true) }
+    Box(modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+        LazyColumn(
+            Modifier.widthIn(max = 760.dp).fillMaxSize().testTag("chat-list"),
+            state = listState,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            items(state.items, key = { it.key }) { item -> ChatItemView(item, onAllow, onDeny, onAnswer, loadAttachment) }
+            if (state.liveText.isNotEmpty()) {
+                item(key = "live") { AssistantBubble(state.liveText, live = true) }
+            }
         }
+    }
+}
+
+/** The rounded input card: attachments, text field, "+" attach and a send / stop button. */
+@Composable
+private fun Composer(
+    draft: String,
+    onDraft: (String) -> Unit,
+    drafts: List<DraftAttachment>,
+    active: Boolean,
+    canSend: Boolean,
+    onSend: () -> Unit,
+    onInterrupt: () -> Unit,
+    onPickFiles: () -> Unit,
+    onRemoveDraft: (Long) -> Unit,
+) {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerLowest,
+            shape = RoundedCornerShape(26.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            shadowElevation = 2.dp,
+            modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+            Column(Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
+                if (drafts.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    DraftChips(drafts, onRemoveDraft)
+                }
+                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    RoundIconButton(
+                        onClick = onPickFiles,
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.testTag("chat-attach"),
+                    ) { Text("＋", fontSize = 20.sp) }
+                    TextField(
+                        value = draft,
+                        onValueChange = onDraft,
+                        placeholder = { Text("给 Claude 发消息…") },
+                        maxLines = 6,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            disabledContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            disabledIndicatorColor = Color.Transparent,
+                        ),
+                        modifier = Modifier.weight(1f).testTag("chat-input"),
+                    )
+                    if (active && !canSend) {
+                        RoundIconButton(
+                            onClick = onInterrupt,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            contentColor = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.testTag("chat-stop"),
+                        ) { Text("■", fontSize = 13.sp) }
+                    } else {
+                        RoundIconButton(
+                            onClick = onSend,
+                            enabled = canSend,
+                            color = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.testTag("chat-send"),
+                        ) { Text("↑", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RoundIconButton(
+    onClick: () -> Unit,
+    color: Color,
+    contentColor: Color,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = CircleShape,
+        color = if (enabled) color else MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = if (enabled) contentColor else MaterialTheme.colorScheme.outline,
+        modifier = modifier.padding(bottom = 4.dp).size(40.dp),
+    ) {
+        Box(contentAlignment = Alignment.Center) { content() }
     }
 }

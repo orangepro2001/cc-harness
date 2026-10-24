@@ -3,9 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
 <title>CC Harness</title>
 <base href="/">
-<link rel="icon" href="data:,">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23d97757%27/%3E%3Ctext x=%2716%27 y=%2723%27 font-size=%2720%27 text-anchor=%27middle%27 fill=%27%23fff%27%3E%E2%9C%BB%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -14,6 +16,7 @@
 <main id="login" hidden>
   <form id="login-form">
     <h1>CC Harness</h1>
+    <p class="sub">常驻的 Claude Code 服务</p>
     <input id="login-user" autocomplete="username" placeholder="用户名" value="tony" required>
     <input id="login-pass" type="password" autocomplete="current-password" placeholder="密码" required>
     <button type="submit">登录</button>
@@ -23,14 +26,17 @@
 
 <!-- app -->
 <div id="app" hidden>
+  <div id="scrim"></div>
   <aside id="side">
     <header>
-      <b>会话</b>
+      <b>CC Harness</b>
       <span id="who"></span>
-      <button id="btn-logout" title="退出登录">退出</button>
+      <button id="btn-logout" class="ghost" title="退出登录">退出</button>
     </header>
-    <button id="btn-new" class="primary">＋ 新建会话</button>
-    <button id="btn-import" title="接管本机 Claude Code 里已有的会话">导入本地会话…</button>
+    <div class="side-acts">
+      <button id="btn-new" class="primary">＋ 新建会话</button>
+      <button id="btn-import" class="ghost" title="接管本机 Claude Code 里已有的会话">接管本机会话…</button>
+    </div>
     <ul id="list"></ul>
     <section id="usage" hidden>
       <h2>用量 <small id="usage-plan"></small></h2>
@@ -40,29 +46,40 @@
 
   <section id="main">
     <header id="bar">
-      <button id="btn-menu" title="会话列表">☰</button>
-      <div id="title"></div>
+      <button id="btn-menu" class="ghost" title="会话列表" aria-label="会话列表">☰</button>
+      <div class="heading">
+        <div id="title"></div>
+        <div id="meta"></div>
+      </div>
       <span id="status" class="chip"></span>
       <select id="model" title="模型"></select>
       <select id="effort" title="推理强度 (effort)"></select>
       <select id="mode" title="权限模式"></select>
-      <button id="btn-int" title="中断当前回合">中断</button>
-      <button id="btn-stop" title="结束后台进程（会话可恢复）">停止进程</button>
-      <button id="btn-del" title="删除会话">删除</button>
+      <button id="btn-int" title="中断当前回合 (Esc)">中断</button>
+      <button id="btn-stop" class="ghost" title="结束后台进程（会话可恢复）">停止进程</button>
+      <button id="btn-del" class="ghost danger" title="删除会话">删除</button>
     </header>
-    <div id="meta"></div>
-    <div id="log"></div>
+    <div id="log"><div class="wrap" id="wrap"></div></div>
+    <button id="jump" hidden>↓ 回到底部</button>
     <form id="composer">
-      <div id="atts" hidden></div>
       <ul id="slash" hidden></ul>
-      <div class="crow">
-        <button type="button" id="btn-attach" title="添加图片或文件" aria-label="添加图片或文件">📎</button>
-        <input type="file" id="file" multiple hidden>
-        <textarea id="input" rows="2" placeholder="输入消息，/ 调出命令，Enter 发送，Shift+Enter 换行；可粘贴或拖入图片/文件"></textarea>
-        <button type="submit" class="primary">发送</button>
+      <div class="cbox">
+        <div id="atts" hidden></div>
+        <div class="crow">
+          <button type="button" id="btn-attach" title="添加图片或文件" aria-label="添加图片或文件">＋</button>
+          <input type="file" id="file" multiple hidden>
+          <textarea id="input" rows="1" placeholder="给 Claude 发消息…"></textarea>
+          <button type="submit" class="primary" id="btn-send" title="发送 (Enter)" aria-label="发送">↑</button>
+        </div>
       </div>
+      <div class="hint">Enter 发送 · Shift+Enter 换行 · / 命令 · Esc 中断 · 可粘贴或拖入文件</div>
     </form>
-    <div id="empty">选择或新建一个会话</div>
+    <div id="empty">
+      <div class="logo">✻</div>
+      <h2>CC Harness</h2>
+      <p>选择左侧的会话，或新建一个开始</p>
+      <button class="primary" id="btn-new2">＋ 新建会话</button>
+    </div>
   </section>
 </div>
 

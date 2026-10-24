@@ -1,10 +1,15 @@
 package com.cchharness.app.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -91,11 +96,12 @@ fun UserBubble(
 ) {
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
         Surface(
-            color = MaterialTheme.colorScheme.primaryContainer,
-            shape = RoundedCornerShape(14.dp),
+            color = Harness.colors.userBubble,
+            shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             modifier = Modifier.padding(start = 48.dp).testTag("user-bubble"),
         ) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (text.isNotBlank()) SelectionContainer { Text(text) }
                 attachments.forEach { AttachmentView(it, loadAttachment) }
             }
@@ -147,8 +153,16 @@ fun decodeThumbnail(bytes: ByteArray, maxPx: Int): ImageBitmap? {
 
 @Composable
 fun AssistantBubble(text: String, live: Boolean = false) {
-    SelectionContainer {
-        MarkdownText(text, Modifier.fillMaxWidth().testTag(if (live) "live-bubble" else "assistant-bubble"))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Dot(
+            if (live) Harness.colors.brand else MaterialTheme.colorScheme.onSurface,
+            Modifier.padding(top = 9.dp),
+            size = 7.dp,
+            pulse = live,
+        )
+        SelectionContainer(Modifier.weight(1f)) {
+            MarkdownText(text, Modifier.fillMaxWidth().testTag(if (live) "live-bubble" else "assistant-bubble"))
+        }
     }
 }
 
@@ -166,21 +180,36 @@ fun NoteLine(note: Note) {
 @Composable
 fun ToolCallCard(call: ToolCall) {
     var expanded by remember { mutableStateOf(false) }
-    Card(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth().testTag("tool-${call.toolUseId}")) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(call.name, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Text(
-                    call.summary,
-                    fontSize = 13.sp,
-                    maxLines = if (expanded) Int.MAX_VALUE else 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-                if (call.result == null) Text("…", fontSize = 13.sp)
-            }
-            if (expanded) {
+    val state = when {
+        call.result == null -> Harness.colors.brand
+        call.isError -> Harness.colors.bad
+        else -> Harness.colors.ok
+    }
+    // Like the CLI: "● Name  summary", and the result hangs off it once expanded.
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { expanded = !expanded }
+            .testTag("tool-${call.toolUseId}"),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Dot(state, size = 7.dp, pulse = call.result == null)
+            Text(call.name, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text(
+                call.summary,
+                fontSize = 12.5.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = if (expanded) Int.MAX_VALUE else 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            Text(if (expanded) "⌄" else "›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+        }
+        if (expanded) {
+            Column(Modifier.padding(start = 15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 CodeBlock(prettyJson(call.inputJson))
                 if (call.result != null) {
                     CodeBlock(call.result!!, error = call.isError, tag = "tool-result-${call.toolUseId}")
@@ -196,15 +225,19 @@ private fun CodeBlock(text: String, error: Boolean = false, tag: String = "code"
         text,
         fontFamily = FontFamily.Monospace,
         fontSize = 12.sp,
-        color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+        lineHeight = 17.sp,
+        color = if (error) Harness.colors.bad else Harness.colors.codeText,
         modifier = Modifier
             .fillMaxWidth()
+            .background(Harness.colors.codeBackground, RoundedCornerShape(8.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
             .horizontalScroll(rememberScrollState())
-            .padding(vertical = 2.dp)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
             .testTag(tag),
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PermissionCard(
     item: PermissionItem,
@@ -213,11 +246,14 @@ fun PermissionCard(
     onAnswer: (PermissionItem, Map<String, String>) -> Unit,
 ) {
     val pending = item.state == PermState.Pending
-    Card(
-        border = BorderStroke(1.dp, if (pending) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outlineVariant),
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(if (pending) 1.5.dp else 1.dp, if (pending) Harness.colors.warn else MaterialTheme.colorScheme.outlineVariant),
+        shadowElevation = if (pending) 3.dp else 0.dp,
         modifier = Modifier.fillMaxWidth().testTag("perm-${item.requestId}"),
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
                 if (item.isQuestion) "Claude 需要你的回答" else "请求使用工具: ${item.toolName}",
                 fontWeight = FontWeight.Bold,
@@ -227,7 +263,7 @@ fun PermissionCard(
             } else {
                 CodeBlock(prettyJson(HarnessJson.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), item.input)))
                 if (pending) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Button(onClick = { onAllow(item.requestId, false) }, modifier = Modifier.testTag("perm-allow")) { Text("允许") }
                         if (item.canRemember) {
                             OutlinedButton(onClick = { onAllow(item.requestId, true) }, modifier = Modifier.testTag("perm-always")) { Text("本会话总是允许") }

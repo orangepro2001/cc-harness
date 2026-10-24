@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.CCHarness" parent="android:Theme.Material.Light.NoActionBar" />
+    <color name="window_bg">#FAF9F5</color>
+    <style name="Theme.CCHarness" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_bg</item>
+    </style>
 </resources>
