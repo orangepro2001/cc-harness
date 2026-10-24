@@ -64,6 +64,15 @@ class TerminalView(context: Context) : View(context) {
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.MONOSPACE }
     private val fill = Paint()
+    private val glyphs = TerminalGlyphs()
+
+    /** Nerd Font icons (private-use code points) come from a bundled font: Android has none of them. */
+    private val symbols: Typeface? = try {
+        Typeface.createFromAsset(context.assets, "fonts/SymbolsNerdFontMono-Regular.ttf")
+    } catch (e: Exception) {
+        null
+    }
+    private val symbolPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = symbols }
     private var cellW = 0f
     private var cellH = 0
     private var baseline = 0f
@@ -88,6 +97,10 @@ class TerminalView(context: Context) : View(context) {
         val fm = paint.fontMetrics
         cellH = ceil(fm.descent - fm.ascent).toInt().coerceAtLeast(1)
         baseline = -fm.ascent
+        // icons are one cell wide in the Mono variant; a little larger reads better and spills into the space that usually follows
+        symbolPaint.textSize = 100f
+        val adv = symbolPaint.measureText("\uF015").takeIf { it > 0f } ?: 100f
+        symbolPaint.textSize = 100f * cellW * SYMBOL_SCALE / adv
     }
 
     val cellCols: Int get() = (((width - 2 * padX) / cellW).toInt()).coerceAtLeast(MIN_COLS)
@@ -164,6 +177,24 @@ class TerminalView(context: Context) : View(context) {
                 canvas.drawText(sb, 0, sb.length, padX + x * cellW, top + baseline, paint)
                 decorate(canvas, line, x, e, top)
                 x = e
+            } else if (TerminalGlyphs.isCustom(cp) && a and TermAttr.WIDE == 0) {
+                // drawn as geometry on integer cell edges, so neighbouring cells meet without seams
+                glyphs.draw(
+                    canvas, cp,
+                    Math.round(padX + x * cellW).toFloat(), Math.round(top).toFloat(),
+                    Math.round(padX + (x + 1) * cellW).toFloat(), Math.round(top + cellH).toFloat(),
+                    effective(line, x).first.let { c -> if (a and TermAttr.DIM != 0) (c and 0x00FFFFFF) or (140 shl 24) else c },
+                )
+                x++
+            } else if (symbols != null && TerminalGlyphs.isPrivateUse(cp) && a and TermAttr.WIDE == 0) {
+                symbolPaint.color = effective(line, x).first
+                if (a and TermAttr.DIM != 0) symbolPaint.alpha = 140
+                val s = String(Character.toChars(cp))
+                val fm = symbolPaint.fontMetrics
+                val gx = padX + x * cellW + (cellW - symbolPaint.measureText(s)) / 2f
+                val gy = top + (cellH - (fm.descent - fm.ascent)) / 2f - fm.ascent
+                canvas.drawText(s, gx, gy, symbolPaint)
+                x++
             } else {
                 val wide = a and TermAttr.WIDE != 0
                 style(line, x)
@@ -445,6 +476,7 @@ class TerminalView(context: Context) : View(context) {
     companion object {
         const val MIN_FONT = 8
         const val MAX_FONT = 28
+        private const val SYMBOL_SCALE = 1.2f
         private const val MIN_COLS = 10
         private const val MIN_ROWS = 3
         private const val STYLE_MASK = TermAttr.BOLD or TermAttr.DIM or TermAttr.ITALIC or TermAttr.UNDERLINE or TermAttr.INVERSE or TermAttr.STRIKE or TermAttr.HIDDEN

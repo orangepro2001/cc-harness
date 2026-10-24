@@ -120,6 +120,31 @@ class TerminalViewTest {
         File("build/screenshots/terminal-view.png").outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
+    @Test
+    fun drawsPowerlineIconsBoxBordersAndBraille() {
+        val emu = TerminalEmulator(44, 14)
+        val bg1 = "$E[48;5;238;38;5;252m"
+        val sep1 = "$E[38;5;238;48;5;31m"
+        val seg2 = "$E[48;5;31;38;5;255m"
+        val sep2 = "$E[38;5;31;49m"
+        emu.feed("$bg1 \uF31B ${sep1}\uE0B0${seg2} ~/d/cc-harness ${sep2}\uE0B0$E[0m\r\n")
+        emu.feed("$E[48;5;34;38;5;16m \uE0A0 main ${"$E[38;5;34;49m"}\uE0B4$E[0m  $E[38;5;34m\uE0B6$E[48;5;34;38;5;16m  3s $E[0m\r\n")
+        emu.feed("\uF115 android  \uF15B api.go  \uF023 secret  \uF489 term  \uDB80\uDC0A\r\n\r\n")
+        emu.feed("╭──────────────────────────────────╮\r\n")
+        emu.feed("│ > 帮我看一下这个错误               │\r\n")
+        emu.feed("╰──────────────────────────────────╯\r\n")
+        emu.feed("┌─┬─┐ ╔═╦═╗ ┏━┳━┓ ▀▄█▌▐ ░▒▓ ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏\r\n")
+        emu.feed("├─┼─┤ ╠═╬═╣ ┣━╋━┫ ▖▗▘▙▚▛▜▝▞▟\r\n")
+        emu.feed("└─┴─┘ ╚═╩═╝ ┗━┻━┛ ╱╲╳\r\n")
+        val v = view(emu, w = 1080, h = 900)
+        val b = bitmap(v)
+        File("build/screenshots").mkdirs()
+        File("build/screenshots/terminal-glyphs.png").outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        val colors = HashSet<Int>()
+        for (x in 0 until b.width step 2) for (y in 0 until b.height step 2) colors += b.getPixel(x, y)
+        assertTrue(colors.size > 8)
+    }
+
     private class Color(argb: Int) {
         val r = argb shr 16 and 255
         val g = argb shr 8 and 255

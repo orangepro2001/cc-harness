@@ -107,6 +107,9 @@ App 里可以打开服务器上的**真实 shell**（会话列表的「＞_ 终�
 - **手机端模拟器**：手写的 VT100/xterm 子集（`android/core/.../term/`，纯 Kotlin，有单元测试）：光标、滚动区、
   256 色/真彩色、备用屏、鼠标上报（tmux 滚轮翻页）、括号粘贴、OSC 标题与剪贴板、中文宽字符。
   额外按键行（Esc/Tab/Ctrl/Alt/方向键等）、双指缩放字号、选择/复制屏幕文字。
+- **字体**：终端用系统等宽字体显示文字；Powerline 分隔符、框线、块字符、盲文（旋转指示器）由 App 自己画成几何图形，
+  保证和格子严丝合缝；Nerd Font 图标（私有区字符，powerlevel10k、`ls --icons` 等用）用打包进 App 的
+  Symbols Nerd Font Mono（MIT，约 2.6 MB，`android/app/src/main/assets/fonts/`）显示。
 - **审计与隔离**：创建、结束、连接、断开都写入服务日志（`journalctl --user -u cc-harness`）；shell 的环境里
   去掉了所有 `HARNESS_*` 变量（密码不会泄露给 shell）。终端只能列出、连接、结束自己的会话。
 - **风险说明**：这等于以服务运行用户的身份在服务器上开 shell，权限高于带权限模式的 Claude 会话。
