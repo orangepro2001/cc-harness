@@ -9,6 +9,9 @@ import com.cchharness.core.DEFAULT_MAX_UPLOAD_BYTES
 import com.cchharness.core.MAX_ATTACHMENTS
 import com.cchharness.core.AuthException
 import com.cchharness.core.CreateSession
+import com.cchharness.core.CreateTerminal
+import com.cchharness.core.TerminalController
+import com.cchharness.core.TerminalInfo
 import com.cchharness.core.DirListing
 import com.cchharness.core.HarnessApi
 import com.cchharness.core.LocalSession
@@ -34,10 +37,15 @@ sealed interface Screen {
     data object Connect : Screen
     data object Sessions : Screen
     data class Chat(val id: String) : Screen
+    data object Terminals : Screen
+    data class Terminal(val id: String) : Screen
 }
 
 /** The chat the user is currently looking at. */
 class OpenChat(val info: SessionInfo, val controller: SessionController)
+
+/** The terminal the user is currently looking at. */
+class OpenTerminal(val info: TerminalInfo, val controller: TerminalController)
 
 /** Progress of the "take over a local session" dialog. */
 data class LocalImport(
@@ -74,6 +82,10 @@ class AppViewModel(
     private val _usage = MutableStateFlow<Usage?>(null)
     private val _usageError = MutableStateFlow<String?>(null)
     private val _local = MutableStateFlow<LocalImport?>(null)
+    private val _terminals = MutableStateFlow<List<TerminalInfo>>(emptyList())
+    private val _terminalError = MutableStateFlow<String?>(null)
+    private val _terminal = MutableStateFlow<OpenTerminal?>(null)
+    private val _termFont = MutableStateFlow(settings.termFontSp)
 
     val screen: StateFlow<Screen> = _screen
     val busy: StateFlow<Boolean> = _busy
@@ -99,6 +111,12 @@ class AppViewModel(
 
     /** State of the "take over a local session" dialog; null while it is closed. */
     val localImport: StateFlow<LocalImport?> = _local
+
+    /** Terminals of the user (only when the server allows them over this connection, see [Me.terminal]). */
+    val terminals: StateFlow<List<TerminalInfo>> = _terminals
+    val terminalError: StateFlow<String?> = _terminalError
+    val terminal: StateFlow<OpenTerminal?> = _terminal
+    val termFont: StateFlow<Int> = _termFont
 
     val savedUrl: String get() = settings.baseUrl
     val savedUser: String get() = settings.user
@@ -181,6 +199,7 @@ class AppViewModel(
             runCatching { client?.logout() }
             settings.token = ""
             leaveChat()
+            leaveTerminal()
             poller?.cancel()
             api = null
             _me.value = null
@@ -193,6 +212,7 @@ class AppViewModel(
     private fun authLost() {
         settings.token = ""
         leaveChat()
+        leaveTerminal()
         poller?.cancel()
         api = null
         _me.value = null
@@ -349,6 +369,121 @@ class AppViewModel(
 
     fun dismissNotice() {
         _notice.value = null
+    }
+
+    // ---- terminals ----
+
+    fun openTerminals() {
+        _terminalError.value = null
+        _screen.value = Screen.Terminals
+        refreshTerminals()
+    }
+
+    fun closeTerminals() {
+        _screen.value = Screen.Sessions
+    }
+
+    fun refreshTerminals() {
+        val client = api ?: return
+        viewModelScope.launch {
+            try {
+                _terminals.value = client.listTerminals()
+                _terminalError.value = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: AuthException) {
+                authLost()
+            } catch (e: Exception) {
+                _terminalError.value = e.message ?: e.toString()
+            }
+        }
+    }
+
+    fun createTerminal(req: CreateTerminal) {
+        val client = api ?: return
+        viewModelScope.launch {
+            _terminalError.value = null
+            try {
+                val info = client.createTerminal(req)
+                _terminals.value = listOf(info) + _terminals.value
+                showTerminal(info)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: AuthException) {
+                authLost()
+            } catch (e: Exception) {
+                _terminalError.value = e.message ?: e.toString()
+            }
+        }
+    }
+
+    /** Resumes the open chat's session in the real Claude Code CLI on the server (the harness process is stopped first). */
+    fun takeOverInTerminal() {
+        val open = _chat.value ?: return
+        val client = api ?: return
+        viewModelScope.launch {
+            try {
+                val info = client.createTerminal(CreateTerminal(kind = "claude", session = open.info.id))
+                _terminals.value = listOf(info) + _terminals.value
+                closeChat()
+                showTerminal(info)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: AuthException) {
+                authLost()
+            } catch (e: Exception) {
+                _notice.value = "终端接管失败: ${e.message ?: e}"
+            }
+        }
+    }
+
+    fun openTerminal(id: String) {
+        val info = _terminals.value.firstOrNull { it.id == id } ?: return
+        showTerminal(info)
+    }
+
+    private fun showTerminal(info: TerminalInfo) {
+        val client = api ?: return
+        leaveTerminal()
+        val controller = TerminalController(client, info.id, viewModelScope)
+        controller.start()
+        _terminal.value = OpenTerminal(info, controller)
+        _screen.value = Screen.Terminal(info.id)
+    }
+
+    /** Leaves the terminal screen; the shell keeps running on the server. */
+    fun closeTerminalScreen() {
+        leaveTerminal()
+        _screen.value = Screen.Terminals
+        refreshTerminals()
+    }
+
+    private fun leaveTerminal() {
+        _terminal.value?.controller?.stop()
+        _terminal.value = null
+    }
+
+    fun killTerminal(id: String) {
+        val client = api ?: return
+        viewModelScope.launch {
+            try {
+                client.deleteTerminal(id)
+                _terminals.value = _terminals.value.filterNot { it.id == id }
+                if (_terminal.value?.info?.id == id) closeTerminalScreen()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: AuthException) {
+                authLost()
+            } catch (e: Exception) {
+                _terminalError.value = "结束失败: ${e.message ?: e}"
+            }
+        }
+    }
+
+    fun setTermFont(sp: Int) {
+        val v = sp.coerceIn(8, 28)
+        _termFont.value = v
+        settings.termFontSp = v
     }
 
     // ---- directory browsing (for choosing a working directory) ----

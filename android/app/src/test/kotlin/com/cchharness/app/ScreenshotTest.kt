@@ -14,6 +14,20 @@ import com.cchharness.app.ui.DirectoryPickerDialog
 import com.cchharness.app.ui.HarnessTheme
 import com.cchharness.app.ui.NewSessionDialog
 import com.cchharness.app.ui.SessionListScreen
+import com.cchharness.app.ui.MarkdownText
+import com.cchharness.app.ui.TerminalScreen
+import com.cchharness.app.ui.TerminalsScreen
+import com.cchharness.core.TermEvent
+import com.cchharness.core.TerminalController
+import com.cchharness.core.TerminalInfo
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.cchharness.core.ChatReducer
 import com.cchharness.core.Connection
 import com.cchharness.core.DirEntry
@@ -211,5 +225,80 @@ class ScreenshotTest {
             }
         }
         save(null, "09-update-dialog")
+    }
+
+    @Test
+    fun markdownWithTablesAndQuotes() {
+        val md = """
+            ### 三、极致跨平台
+
+            这里有几个**关键点**：~~旧结论~~ 见 https://example.com/a。`inline | code`
+
+            | 技术栈 | Win / Linux / mac | 一台机器全出 | 旧 Windows |
+            | --- | :-: | --: | --- |
+            | Avalonia(本项目) | 三个都有 | 是(非 AOT) | .NET 10 要求 Win10 以上 |
+            | Wails | 三个都有 | Windows 可以,Linux/mac 需要对应机器 | WebView2 要 Win10 以上 |
+            | Gio / ImGui | 三个都有 | Gio 可以(无 cgo) | 较好 |
+
+            > 结论:一份代码覆盖面最广的是 Avalonia 和 Qt。
+
+            - 顶层
+              - 嵌套 **粗体 `code`**
+            - [x] 已完成
+            - [ ] 待办
+
+            ---
+
+            ```go
+            func main() {}
+            ```
+        """.trimIndent()
+        rule.setContent {
+            HarnessTheme {
+                androidx.compose.material3.Surface(Modifier.fillMaxSize()) {
+                    MarkdownText(md, Modifier.padding(16.dp))
+                }
+            }
+        }
+        rule.onNodeWithTag("md-table").assertExists()
+        rule.onNodeWithTag("md-quote").assertExists()
+        save(null, "10-markdown")
+    }
+
+    @Test
+    fun terminalsList() {
+        val list = listOf(
+            TerminalInfo("cch00000001", "cc-harness", "shell", "/home/tony/dev/cc-harness", attached = 1),
+            TerminalInfo("cch00000002", "claude · 整理 README", "claude", "/home/tony/dev/app"),
+        )
+        rule.setContent { HarnessTheme { TerminalsScreen(list, null, {}, {}, {}, {}, {}) } }
+        save(null, "11-terminals")
+    }
+
+    @Test
+    fun terminalScreen() {
+        val api = FakeApi()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val controller = TerminalController(api, "cch00000001", scope, cols = 52, rows = 30)
+        val e = "\u001b"
+        val screen = buildString {
+            append("$e[1;32mtony@ai-pc$e[0m:$e[1;34m~/dev/cc-harness$e[0m$ git status -sb\r\n")
+            append("## main\r\n$e[31m M$e[0m android/app/src/main/kotlin/ui/Theme.kt\r\n$e[31m M$e[0m web/style.css\r\n$e[31m??$e[0m terminal.go\r\n")
+            append("$e[1;32mtony@ai-pc$e[0m:$e[1;34m~/dev/cc-harness$e[0m$ go test ./...\r\n")
+            append("ok  \tcc-harness\t2.708s\r\n")
+            append("$e[38;5;208m● $e[0mClaude Code 终端 · 中文宽字符 OK\r\n")
+            append("$e[1;32mtony@ai-pc$e[0m:$e[1;34m~/dev/cc-harness$e[0m$ ")
+        }
+        api.termEvents.tryEmit(TermEvent.Output(screen.toByteArray()))
+        controller.start()
+        val until = System.currentTimeMillis() + 10_000
+        while (!controller.emulator.screenText().contains("中文宽字符") && System.currentTimeMillis() < until) Thread.sleep(50)
+        assertTrue(controller.emulator.screenText().contains("go test"), controller.emulator.screenText())
+        rule.setContent { HarnessTheme { TerminalScreen("cc-harness", controller, 13, {}, {}, {}) } }
+        rule.waitForIdle()
+        rule.onNodeWithTag("term-keys").assertExists()
+        save(null, "12-terminal")
+        controller.stop()
+        scope.cancel()
     }
 }

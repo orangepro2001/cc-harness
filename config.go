@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,14 @@ type Config struct {
 	ReleasesDir   string            // HARNESS_RELEASES: published client builds (default <data>/releases)
 	UsageURL      string            // HARNESS_USAGE_URL: plan-usage endpoint (default Anthropic's OAuth usage API)
 	MaxUpload     int64             // max bytes per uploaded file (HARNESS_MAX_UPLOAD_MB, default 25)
+
+	// Terminal (a real shell on the server, shown by the Android app). Off unless HARNESS_TERMINAL names users.
+	TerminalUsers []string     // HARNESS_TERMINAL: comma separated users, or "*" for every user; empty = disabled
+	TerminalNets  []*net.IPNet // HARNESS_TERMINAL_NETS: client addresses allowed to use it (default loopback + Tailscale); nil = any
+	TerminalMax   int          // HARNESS_TERMINAL_MAX: terminals per user (default 8)
+	TerminalShell string       // HARNESS_TERMINAL_SHELL: login shell to run (default $SHELL or /bin/bash)
+	TmuxBin       string       // HARNESS_TMUX_BIN (default: tmux from PATH)
+	TmuxSocket    string       // HARNESS_TMUX_SOCKET: tmux server name (default cch)
 }
 
 var basePathRe = regexp.MustCompile(`^[A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)*$`)
@@ -153,7 +162,62 @@ func LoadConfig() (Config, error) {
 		}
 		c.MaxUpload = int64(n) << 20
 	}
+	if err := loadTerminalConfig(&c); err != nil {
+		return c, err
+	}
 	return c, nil
+}
+
+// defaultTerminalNets: this machine and the tailnet. LAN addresses are excluded on purpose, the
+// harness speaks plain HTTP there and a terminal would send keystrokes in the clear.
+var defaultTerminalNets = "127.0.0.0/8,::1/128,100.64.0.0/10,fd7a:115c:a1e0::/48"
+
+func loadTerminalConfig(c *Config) error {
+	c.TerminalMax = 8
+	if v := os.Getenv("HARNESS_TERMINAL_MAX"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 64 {
+			return fmt.Errorf("HARNESS_TERMINAL_MAX: invalid value %q", v)
+		}
+		c.TerminalMax = n
+	}
+	for _, u := range splitList(os.Getenv("HARNESS_TERMINAL"), ",") {
+		u = strings.ToLower(u)
+		if u != "*" && !validUser(u) {
+			return fmt.Errorf("HARNESS_TERMINAL: bad user %q", u)
+		}
+		c.TerminalUsers = append(c.TerminalUsers, u)
+	}
+	nets := os.Getenv("HARNESS_TERMINAL_NETS")
+	if nets == "" {
+		nets = defaultTerminalNets
+	}
+	if nets != "any" {
+		for _, n := range splitList(nets, ",") {
+			if !strings.Contains(n, "/") {
+				if ip := net.ParseIP(n); ip != nil && ip.To4() != nil {
+					n += "/32"
+				} else {
+					n += "/128"
+				}
+			}
+			_, ipn, err := net.ParseCIDR(n)
+			if err != nil {
+				return fmt.Errorf("HARNESS_TERMINAL_NETS: %v", err)
+			}
+			c.TerminalNets = append(c.TerminalNets, ipn)
+		}
+	}
+	c.TerminalShell = os.Getenv("HARNESS_TERMINAL_SHELL")
+	if c.TerminalShell == "" {
+		c.TerminalShell = os.Getenv("SHELL")
+	}
+	if c.TerminalShell == "" {
+		c.TerminalShell = "/bin/bash"
+	}
+	c.TmuxBin = os.Getenv("HARNESS_TMUX_BIN")
+	c.TmuxSocket = os.Getenv("HARNESS_TMUX_SOCKET")
+	return nil
 }
 
 // loadEnvFile reads KEY=VALUE lines into the environment without overriding

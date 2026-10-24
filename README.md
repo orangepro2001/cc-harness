@@ -81,6 +81,31 @@ curl -u tony:PASSWORD -X POST http://HOST:8765/api/sessions -d '{"title":"demo"}
   发布脚本会校验签名并把证书指纹记在 `<data>/android-signer.sha256`，证书变化时拒绝发布。
   生成密钥：`keytool -genkeypair -keystore cc-harness-release.jks -alias cc-harness -keyalg RSA -keysize 4096 -validity 36500`。
 
+## 终端（仅 Android App，默认关闭）
+
+App 里可以打开服务器上的**真实 shell**（会话列表的「＞_ 终端」），也可以在聊天页菜单里「在终端中接管」，
+把该会话用真正的 `claude --resume` 命令行接着聊。网页端没有终端入口。
+
+- **开启**：`HARNESS_TERMINAL=用户名[,用户名]`（`*` = 所有用户），重启服务。需要服务器装有 tmux。
+  不设置就完全关闭：接口返回 403，`/api/me` 的 `terminal` 为 false，App 不显示入口。
+- **来源限制**：只接受本机和 Tailscale 来源的请求（`HARNESS_TERMINAL_NETS`，默认
+  `127.0.0.0/8,::1/128,100.64.0.0/10,fd7a:115c:a1e0::/48`），按 TCP 对端地址判断、不信任代理头。
+  局域网地址上的 HTTP 是明文，按键会被嗅探，所以默认不放行；确实需要时设 `any`。
+- **持久**：每个终端是一个独立 tmux 服务（`-L cch`）里的会话，每次连接只是一个临时的 `tmux attach`。
+  手机锁屏、断网后 shell 仍在运行，重连会重画原屏幕；在 App 里点「结束」才会关闭。每用户最多
+  `HARNESS_TERMINAL_MAX`（默认 8）个。
+- **传输**：沿用 SSE 下行 + POST 上行，没有新增依赖。接口：`GET/POST /api/terminals`、
+  `DELETE /api/terminals/{id}`、`GET /api/terminals/{id}/stream?cols=&rows=`（SSE，首条事件给出连接 id）、
+  `POST /api/term-attachments/{aid}/input`（原始字节）、`POST /api/term-attachments/{aid}/resize`。
+- **手机端模拟器**：手写的 VT100/xterm 子集（`android/core/.../term/`，纯 Kotlin，有单元测试）：光标、滚动区、
+  256 色/真彩色、备用屏、鼠标上报（tmux 滚轮翻页）、括号粘贴、OSC 标题与剪贴板、中文宽字符。
+  额外按键行（Esc/Tab/Ctrl/Alt/方向键等）、双指缩放字号、选择/复制屏幕文字。
+- **审计与隔离**：创建、结束、连接、断开都写入服务日志（`journalctl --user -u cc-harness`）；shell 的环境里
+  去掉了所有 `HARNESS_*` 变量（密码不会泄露给 shell）。终端只能列出、连接、结束自己的会话。
+- **风险说明**：这等于以服务运行用户的身份在服务器上开 shell，权限高于带权限模式的 Claude 会话。
+  目前的"仅手机"靠 UI 入口和来源网络限制；用密码登录的任何客户端（包括网页的 Cookie）在允许的网络内
+  都能调用接口。后续计划：设备绑定（Android Keystore 密钥签名挑战）。
+
 ## 反向代理（Tailscale Serve）
 
 本机的反向代理是 Tailscale Serve，已加路由：`https://tony-ai-pc-1.tail9f7f1f.ts.net/claude` →

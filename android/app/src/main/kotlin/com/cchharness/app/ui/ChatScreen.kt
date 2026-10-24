@@ -102,6 +102,7 @@ fun ChatScreen(
     onSetModel: (String) -> Unit = {},
     onSetEffort: (String) -> Unit = {},
     loadAttachment: suspend (Attachment) -> ByteArray? = { null },
+    onTakeOver: (() -> Unit)? = null,
 ) {
     val modes = PERMISSION_MODES.filter { it.first != "bypassPermissions" || allowBypass }
     var menuOpen by remember { mutableStateOf(false) }
@@ -164,6 +165,16 @@ fun ChatScreen(
                                 },
                                 modifier = Modifier.testTag("menu-stop"),
                             )
+                            if (onTakeOver != null) {
+                                DropdownMenuItem(
+                                    text = { Text("在终端中接管(Claude Code)") },
+                                    onClick = {
+                                        menuOpen = false
+                                        onTakeOver()
+                                    },
+                                    modifier = Modifier.testTag("menu-takeover"),
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text("模型 / Effort…") },
                                 onClick = {

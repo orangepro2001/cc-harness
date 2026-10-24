@@ -57,53 +57,112 @@ function esc(s) {
 
 function inline(s) {
   s = esc(s);
-  const codes = [];
-  s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return "\u0000" + (codes.length - 1) + "\u0000"; });
-  s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  // Protect spans whose content must not be touched by later rules, then restore them in order.
+  const keep = [];
+  const stash = (html) => "\u0000" + (keep.push(html) - 1) + "\u0000";
+  s = s.replace(/`([^`\n]+)`/g, (_, c) => stash("<code>" + c + "</code>"));
+  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => stash('<a href="' + u + '" target="_blank" rel="noopener noreferrer">' + t + "</a>"));
+  s = s.replace(/https?:\/\/[A-Za-z0-9\-._~:\/?#@!$&*+,;=%]+/g, (u) => {
+    const m = u.match(/[.,;:!?'"&;，。；：！？]+$/); // sentence punctuation is not part of the URL
+    const tail = m ? m[0] : "";
+    const url = tail ? u.slice(0, -tail.length) : u;
+    return stash('<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + "</a>") + tail;
+  });
+  s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/~~(.+?)~~/g, "<del>$1</del>");
   s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
-  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => "<code>" + codes[+i] + "</code>");
+  // stashed entries can nest (a link inside bold), so restore until nothing is left
+  while (/\u0000\d+\u0000/.test(s)) s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[+i]);
+  return s;
 }
 
-// Small markdown subset: fences, headings, lists, paragraphs, inline code/bold/em/links.
+const RE_ROW = /\|/;
+const RE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+const RE_LI = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+
+function splitRow(line) {
+  let t = line.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|") && !t.endsWith("\\|")) t = t.slice(0, -1);
+  const cells = [];
+  let cur = "", code = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (c === "\\" && t[i + 1] === "|") { cur += "|"; i++; }
+    else if (c === "`") { code = !code; cur += c; }
+    else if (c === "|" && !code) { cells.push(cur.trim()); cur = ""; }
+    else cur += c;
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+// Markdown subset (same grammar as the Android client): fences, tables, headings, nested
+// lists and task lists, quotes, rules, paragraphs, and inline code/bold/em/strike/links.
 function md(src) {
   const out = [];
   const lines = src.replace(/\r/g, "").split("\n");
+  const isTable = (k) => k + 1 < lines.length && RE_ROW.test(lines[k]) && lines[k].trim() !== "" && RE_SEP.test(lines[k + 1]) && lines[k + 1].includes("-");
+  const structural = (k) => /^\s*```/.test(lines[k]) || /^#{1,6}\s/.test(lines[k]) || RE_LI.test(lines[k]) ||
+    /^\s{0,3}>/.test(lines[k]) || /^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(lines[k]) || isTable(k);
   let i = 0;
   while (i < lines.length) {
     const ln = lines[i];
-    const fence = ln.match(/^```(.*)$/);
-    if (fence) {
+    if (/^\s*```/.test(ln)) {
       const buf = [];
       i++;
-      while (i < lines.length && !/^```\s*$/.test(lines[i])) buf.push(lines[i++]);
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) buf.push(lines[i++]);
       i++;
       out.push('<pre><button type="button" class="cp">复制</button><code>' + esc(buf.join("\n")) + "</code></pre>");
       continue;
     }
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(ln)) { out.push("<hr>"); i++; continue; }
-    if (/^>\s?/.test(ln)) {
-      const q = [];
-      while (i < lines.length && /^>\s?/.test(lines[i])) q.push(lines[i++].replace(/^>\s?/, ""));
-      out.push("<blockquote>" + inline(q.join("\n")).replace(/\n/g, "<br>") + "</blockquote>");
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(ln)) { out.push("<hr>"); i++; continue; }
+    const h = ln.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if (h) { out.push("<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"); i++; continue; }
+    if (isTable(i)) {
+      const head = splitRow(ln);
+      const al = splitRow(lines[i + 1]).map((c) => (c.startsWith(":") && c.endsWith(":") && c.length > 1 ? "center" : c.endsWith(":") ? "right" : ""));
+      i += 2;
+      const style = (c) => (al[c] ? ' style="text-align:' + al[c] + '"' : "");
+      let html = '<div class="tbl"><table><thead><tr>' + head.map((c, k) => "<th" + style(k) + ">" + inline(c) + "</th>").join("") + "</tr></thead><tbody>";
+      while (i < lines.length && lines[i].trim() !== "" && RE_ROW.test(lines[i]) && !/^\s*```/.test(lines[i])) {
+        const cells = splitRow(lines[i++]);
+        html += "<tr>" + head.map((_, k) => "<td" + style(k) + ">" + inline(cells[k] || "") + "</td>").join("") + "</tr>";
+      }
+      out.push(html + "</tbody></table></div>");
       continue;
     }
-    const h = ln.match(/^(#{1,3})\s+(.*)$/);
-    if (h) { out.push("<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"); i++; continue; }
-    if (/^\s*[-*]\s+/.test(ln) || /^\s*\d+\.\s+/.test(ln)) {
-      const ordered = /^\s*\d+\./.test(ln);
-      const items = [];
-      while (i < lines.length && (/^\s*[-*]\s+/.test(lines[i]) || /^\s*\d+\.\s+/.test(lines[i]))) {
-        items.push("<li>" + inline(lines[i].replace(/^\s*([-*]|\d+\.)\s+/, "")) + "</li>");
-        i++;
+    if (/^\s{0,3}>/.test(ln)) {
+      const q = [];
+      while (i < lines.length && /^\s{0,3}>/.test(lines[i])) q.push(lines[i++].replace(/^\s{0,3}>\s?/, ""));
+      out.push("<blockquote>" + inline(q.join("\n").trim()).replace(/\n/g, "<br>") + "</blockquote>");
+      continue;
+    }
+    if (RE_LI.test(ln)) {
+      // Items keep their indentation level; consecutive items form one nested list.
+      const stack = []; // {tag, level}
+      let html = "";
+      while (i < lines.length && RE_LI.test(lines[i])) {
+        const m = lines[i++].match(RE_LI);
+        const level = Math.floor(m[1].replace(/\t/g, "  ").length / 2);
+        const tag = /\d/.test(m[2]) ? "ol" : "ul";
+        let text = m[3], task = "";
+        const t = text.match(/^\[([ xX])\]\s+/);
+        if (t && tag === "ul") { task = t[1] === " " ? "☐ " : "☑ "; text = text.slice(t[0].length); }
+        while (stack.length && stack[stack.length - 1].level > level) { html += "</li></" + stack.pop().tag + ">"; }
+        const top = stack[stack.length - 1];
+        if (top && top.level === level) html += "</li>";
+        else { html += "<" + tag + (tag === "ol" && /^\d+/.test(m[2]) && parseInt(m[2]) !== 1 ? ' start="' + parseInt(m[2]) + '"' : "") + ">"; stack.push({ tag, level }); }
+        html += "<li" + (task ? ' class="task"' : "") + ">" + task + inline(text);
       }
-      out.push((ordered ? "<ol>" : "<ul>") + items.join("") + (ordered ? "</ol>" : "</ul>"));
+      while (stack.length) html += "</li></" + stack.pop().tag + ">";
+      out.push(html);
       continue;
     }
     if (ln.trim() === "") { i++; continue; }
     const para = [];
-    while (i < lines.length && lines[i].trim() !== "" && !/^```/.test(lines[i]) && !/^#{1,3}\s/.test(lines[i]) && !/^>\s?/.test(lines[i]) &&
-      !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i])) para.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() !== "" && !structural(i)) para.push(lines[i++]);
+    if (!para.length) para.push(lines[i++]); // never spin on a line the paragraph rule refuses
     out.push("<p>" + inline(para.join("\n")).replace(/\n/g, "<br>") + "</p>");
   }
   return out.join("");

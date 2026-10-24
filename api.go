@@ -22,10 +22,11 @@ type API struct {
 	mgr  *Manager
 
 	usage *usageCache
+	term  *Terminals
 }
 
 func NewAPI(cfg Config, auth *Auth, mgr *Manager) *API {
-	return &API{cfg: cfg, auth: auth, mgr: mgr, usage: &usageCache{http: &http.Client{Timeout: 10 * time.Second}}}
+	return &API{cfg: cfg, auth: auth, mgr: mgr, term: NewTerminals(cfg), usage: &usageCache{http: &http.Client{Timeout: 10 * time.Second}}}
 }
 
 type authed func(w http.ResponseWriter, r *http.Request, user string)
@@ -117,6 +118,13 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/permissions/{rid}", a.require(a.withSession(a.permission)))
 	mux.HandleFunc("GET /api/sessions/{id}/history", a.require(a.withSession(a.history)))
 	mux.HandleFunc("GET /api/sessions/{id}/events", a.require(a.withSession(a.events)))
+
+	mux.HandleFunc("GET /api/terminals", a.terminalAPI(a.listTerminals))
+	mux.HandleFunc("POST /api/terminals", a.terminalAPI(a.createTerminal))
+	mux.HandleFunc("DELETE /api/terminals/{id}", a.terminalAPI(a.deleteTerminal))
+	mux.HandleFunc("GET /api/terminals/{id}/stream", a.terminalAPI(a.streamTerminal))
+	mux.HandleFunc("POST /api/term-attachments/{aid}/input", a.terminalAPI(a.termInput))
+	mux.HandleFunc("POST /api/term-attachments/{aid}/resize", a.terminalAPI(a.termResize))
 
 	sub, _ := fs.Sub(webFS, "web")
 	static := http.FileServerFS(sub)
@@ -220,6 +228,7 @@ func (a *API) me(w http.ResponseWriter, r *http.Request, user string) {
 	writeJSON(w, 200, map[string]any{
 		"user": user, "workspace": ws, "roots": append([]string{}, a.cfg.ExtraRoots...),
 		"allowBypass": a.cfg.AllowBypass,
+		"terminal":    a.term.Allowed(user, r) == nil,
 	})
 }
 

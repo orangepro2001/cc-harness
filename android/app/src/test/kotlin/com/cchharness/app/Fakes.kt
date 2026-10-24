@@ -1,6 +1,10 @@
 package com.cchharness.app
 
 import com.cchharness.core.Attachment
+import com.cchharness.core.CreateTerminal
+import com.cchharness.core.TermEvent
+import com.cchharness.core.TerminalInfo
+import kotlinx.coroutines.flow.flow
 import com.cchharness.core.CreateSession
 import com.cchharness.core.Release
 import com.cchharness.core.UploadSource
@@ -159,4 +163,43 @@ class FakeApi : HarnessApi {
     }
 
     override fun events(sessionId: String, after: Long): Flow<StreamEvent> = events
+
+    // ---- terminal ----
+    val terminals = mutableListOf<TerminalInfo>()
+    var onCreateTerminal: (CreateTerminal) -> TerminalInfo = {
+        TerminalInfo("cch0000000${terminals.size + 1}", it.title.ifBlank { "shell" }, it.kind, it.cwd.ifEmpty { "/work" })
+    }
+
+    /** Output a terminal screen receives after it attached (as attachment "att-1"). */
+    val termEvents = MutableSharedFlow<TermEvent>(replay = 64, extraBufferCapacity = 256)
+    val termInput = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+    override suspend fun listTerminals(): List<TerminalInfo> {
+        calls += "term-list"
+        return terminals.toList()
+    }
+
+    override suspend fun createTerminal(req: CreateTerminal): TerminalInfo {
+        calls += "term-create:${req.kind}:${req.session}:${req.cwd}"
+        return onCreateTerminal(req).also { terminals += it }
+    }
+
+    override suspend fun deleteTerminal(id: String) {
+        calls += "term-delete:$id"
+        terminals.removeAll { it.id == id }
+    }
+
+    override fun terminalStream(id: String, cols: Int, rows: Int): Flow<TermEvent> = flow {
+        calls += "term-stream:$id:${cols}x$rows"
+        emit(TermEvent.Attached("att-1"))
+        termEvents.collect { emit(it) }
+    }
+
+    override suspend fun terminalInput(attachment: String, data: ByteArray) {
+        termInput += String(data, Charsets.UTF_8)
+    }
+
+    override suspend fun terminalResize(attachment: String, cols: Int, rows: Int) {
+        calls += "term-resize:$cols:$rows"
+    }
 }

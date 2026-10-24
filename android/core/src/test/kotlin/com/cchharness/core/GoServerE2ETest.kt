@@ -257,12 +257,66 @@ class GoServerE2ETest {
         assertTrue(!bad.exists() && !File(bad.path + ".part").exists())
     }
 
+    private suspend fun TerminalController.screenHas(what: String) {
+        try {
+            withTimeout(15_000) {
+                while (!emulator.screenText().contains(what)) kotlinx.coroutines.delay(50)
+            }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            throw AssertionError("timed out waiting for \"$what\" on the terminal; screen:\n${emulator.screenText()}\nstatus=${status.value}")
+        }
+    }
+
+    @Test
+    fun terminalRunsAShellAndSurvivesReconnects() = runBlocking {
+        assumeTrue("tmux not installed", runCatching { ProcessBuilder("tmux", "-V").start().waitFor() == 0 }.getOrDefault(false))
+        val c = newClient()
+        assertTrue(c.me().terminal)
+        val info = c.createTerminal(CreateTerminal(title = "e2e", cols = 90, rows = 24))
+        assertEquals("shell", info.kind)
+        assertEquals(listOf(info.id), c.listTerminals().map { it.id })
+
+        val first = TerminalController(c, info.id, scope, cols = 90, rows = 24).also { it.start() }
+        first.status.await("live") { it == TermStatus.Live }
+        first.send("echo e2e-\$((6*7))\r")
+        first.screenHas("e2e-42")
+        first.resize(70, 20)
+        first.send("stty size\r")
+        first.screenHas("20 70")
+        first.stop()
+
+        // a new connection (as after the app was backgrounded) repaints the very same shell
+        val second = TerminalController(c, info.id, scope, cols = 70, rows = 20).also { it.start() }
+        second.status.await("live again") { it == TermStatus.Live }
+        second.screenHas("e2e-42")
+        second.send("exit\r")
+        second.status.await("ended") { it == TermStatus.Ended }
+        second.stop()
+        // the shell ended, so the terminal is gone
+        withTimeout(10_000) { while (c.listTerminals().isNotEmpty()) kotlinx.coroutines.delay(100) }
+    }
+
+    @Test
+    fun terminalIsPrivateToItsOwner() = runBlocking {
+        assumeTrue("tmux not installed", runCatching { ProcessBuilder("tmux", "-V").start().waitFor() == 0 }.getOrDefault(false))
+        val c = newClient()
+        val info = c.createTerminal(CreateTerminal())
+        val other = HarnessClient(baseUrl).also { it.login("someone", PASSWORD) }
+        assertTrue(!other.me().terminal)
+        val e = assertFailsWith<ApiException> { other.listTerminals() }
+        assertEquals(403, e.code)
+        c.deleteTerminal(info.id)
+        assertFailsWith<ApiException> { c.deleteTerminal(info.id) }
+        Unit
+    }
+
     companion object {
         private const val PASSWORD = "test-pass-1"
         private lateinit var tmp: File
         private lateinit var shared: File
         private lateinit var baseUrl: String
         private var server: Process? = null
+        private val tmuxSocket = "cche2e${ProcessHandle.current().pid()}"
 
         private fun run(dir: File, vararg cmd: String) {
             val p = ProcessBuilder(*cmd).directory(dir).redirectErrorStream(true).start()
@@ -293,6 +347,8 @@ class GoServerE2ETest {
                     put("HARNESS_ROOTS", shared.path)
                     put("HARNESS_CLAUDE_BIN", File(tmp, "mock.test").path)
                     put("MOCK_CLAUDE", "1")
+                    put("HARNESS_TERMINAL", "tony")
+                    put("HARNESS_TMUX_SOCKET", tmuxSocket)
                 }
                 redirectErrorStream(true)
                 redirectOutput(File(tmp, "server.log"))
@@ -313,6 +369,7 @@ class GoServerE2ETest {
         fun stopServer() {
             server?.destroy()
             server?.waitFor(5, TimeUnit.SECONDS)
+            runCatching { ProcessBuilder("tmux", "-L", tmuxSocket, "kill-server").start().waitFor(5, TimeUnit.SECONDS) }
             if (::tmp.isInitialized) tmp.deleteRecursively()
         }
     }

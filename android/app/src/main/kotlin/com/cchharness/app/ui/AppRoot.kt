@@ -21,6 +21,9 @@ import com.cchharness.app.ui.ConnectScreen
 import com.cchharness.app.ui.ImportDialog
 import com.cchharness.app.ui.NewSessionDialog
 import com.cchharness.app.ui.SessionListScreen
+import com.cchharness.app.ui.NewTerminalDialog
+import com.cchharness.app.ui.TerminalScreen
+import com.cchharness.app.ui.TerminalsScreen
 import com.cchharness.app.ui.UpdateDialog
 
 /** Chooses the screen for the current [AppViewModel] state. */
@@ -39,6 +42,8 @@ fun AppRoot(vm: AppViewModel) {
             }
             Screen.Sessions -> SessionsRoute(vm)
             is Screen.Chat -> ChatRoute(vm, s.id)
+            Screen.Terminals -> TerminalsRoute(vm)
+            is Screen.Terminal -> TerminalRoute(vm, s.id)
         }
     }
 }
@@ -77,6 +82,8 @@ private fun SessionsRoute(vm: AppViewModel) {
         usage = usage,
         usageError = usageError,
         onImport = vm::openLocalImport,
+        showTerminal = me?.terminal == true,
+        onTerminals = vm::openTerminals,
     )
 
     localImport?.let {
@@ -141,5 +148,50 @@ private fun ChatRoute(vm: AppViewModel, id: String) {
         onSetModel = vm::setModel,
         onSetEffort = vm::setEffort,
         loadAttachment = vm::loadAttachment,
+        onTakeOver = if (me?.terminal == true) vm::takeOverInTerminal else null,
+    )
+}
+
+@Composable
+private fun TerminalsRoute(vm: AppViewModel) {
+    val terminals by vm.terminals.collectAsState()
+    val error by vm.terminalError.collectAsState()
+    var creating by remember { mutableStateOf(false) }
+    BackHandler(onBack = vm::closeTerminals)
+    TerminalsScreen(
+        terminals = terminals,
+        error = error,
+        onOpen = vm::openTerminal,
+        onNew = { creating = true },
+        onKill = vm::killTerminal,
+        onRefresh = vm::refreshTerminals,
+        onBack = vm::closeTerminals,
+    )
+    if (creating) {
+        NewTerminalDialog(
+            error = error,
+            load = vm::listDirs,
+            makeDir = vm::makeDir,
+            onCreate = {
+                creating = false
+                vm.createTerminal(it)
+            },
+            onDismiss = { creating = false },
+        )
+    }
+}
+
+@Composable
+private fun TerminalRoute(vm: AppViewModel, id: String) {
+    val open = vm.terminal.collectAsState().value?.takeIf { it.info.id == id } ?: return
+    val font by vm.termFont.collectAsState()
+    BackHandler(onBack = vm::closeTerminalScreen)
+    TerminalScreen(
+        title = open.info.title,
+        controller = open.controller,
+        fontSizeSp = font,
+        onFontSize = vm::setTermFont,
+        onBack = vm::closeTerminalScreen,
+        onClose = { vm.killTerminal(id) },
     )
 }

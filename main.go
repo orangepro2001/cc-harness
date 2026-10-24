@@ -33,7 +33,8 @@ func main() {
 		log.Fatalf("auth: %v", err)
 	}
 	mgr := NewManager(cfg, NewStore(cfg.DataDir))
-	handler := NewAPI(cfg, auth, mgr).Handler()
+	api := NewAPI(cfg, auth, mgr)
+	handler := api.Handler()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -44,6 +45,7 @@ func main() {
 	log.Printf("cc-harness starting: data=%s claude=%s bind=%v", cfg.DataDir, cfg.ClaudeBin, cfg.Binds)
 	b.run(ctx)
 	b.shutdown()
+	api.term.KillAttachments()
 	mgr.StopAll()
 	log.Printf("bye")
 }

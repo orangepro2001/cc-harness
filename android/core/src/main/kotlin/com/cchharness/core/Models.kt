@@ -20,6 +20,8 @@ data class Me(
     val workspace: String = "",
     val roots: List<String> = emptyList(),
     val allowBypass: Boolean = false,
+    /** True when this user may open terminals from the network the app is connected over. */
+    val terminal: Boolean = false,
 )
 
 @Serializable
@@ -165,3 +167,32 @@ data class UsageLimit(
 
 @Serializable
 data class Usage(val plan: String = "", val limits: List<UsageLimit> = emptyList())
+
+@Serializable
+data class TerminalInfo(
+    val id: String,
+    val title: String = "",
+    /** shell | claude */
+    val kind: String = "shell",
+    val cwd: String = "",
+    val createdAt: String = "",
+    val attached: Int = 0,
+)
+
+@Serializable
+data class CreateTerminal(
+    val cwd: String = "",
+    val kind: String = "shell",
+    /** For kind = claude: the harness session to resume in the real CLI. */
+    val session: String = "",
+    val title: String = "",
+    val cols: Int = 80,
+    val rows: Int = 24,
+)
+
+/** What a terminal connection delivers: the attachment id first, then output chunks, then possibly the end. */
+sealed interface TermEvent {
+    data class Attached(val id: String) : TermEvent
+    class Output(val bytes: ByteArray) : TermEvent
+    data object Exited : TermEvent
+}

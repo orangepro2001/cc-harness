@@ -4,12 +4,14 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertTextContains
+import kotlinx.coroutines.cancel
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import com.cchharness.app.ui.ChatScreen
@@ -422,5 +424,54 @@ class ScreensUiTest {
         rule.onNodeWithText("one").assertExists()
         rule.onNodeWithText("val x = 1").assertExists()
         rule.onNode(hasText("plain bold text")).assertExists()
+    }
+
+    @Test
+    fun markdownTableCellsAndTaskItemsRender() {
+        rule.setContent { HarnessTheme { MarkdownText("| a | b |\n|---|:-:|\n| one | two |\n\n- [x] done") } }
+        rule.onNodeWithTag("md-table").assertExists()
+        rule.onNodeWithText("one").assertExists()
+        rule.onNodeWithText("two").assertExists()
+        rule.onNode(hasText("done", substring = true)).assertExists()
+    }
+
+    // ---- terminal ----
+
+    @Test
+    fun terminalKeysSendEscapeSequencesAndStickyCtrl() {
+        val api = FakeApi()
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+        val controller = com.cchharness.core.TerminalController(api, "cch00000001", scope)
+        controller.start()
+        rule.setContent { HarnessTheme { com.cchharness.app.ui.TerminalScreen("t", controller, 14, {}, {}, {}) } }
+        val until = System.currentTimeMillis() + 10_000
+        while (controller.status.value != com.cchharness.core.TermStatus.Live && System.currentTimeMillis() < until) Thread.sleep(20)
+        rule.onNodeWithTag("term-status").assertTextContains("已连接")
+
+        rule.onNodeWithTag("term-key-esc").performClick()
+        rule.onNodeWithTag("term-key-up").performClick()
+        rule.onNodeWithTag("term-key-ctrl").performClick()
+        rule.onNodeWithTag("term-key-char-/").performScrollTo().performClick() // Ctrl+/ = 0x1F, and Ctrl is released afterwards
+        rule.onNodeWithTag("term-key-char-/").performClick()
+        val want = "\u001b" + "\u001b[A" + "\u001f" + "/"
+        while (api.termInput.joinToString("") != want && System.currentTimeMillis() < until) Thread.sleep(20)
+        assertEquals(want, api.termInput.joinToString(""))
+        controller.stop()
+        scope.cancel()
+    }
+
+    @Test
+    fun terminalShowsAnEndedBanner() {
+        val api = FakeApi()
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+        val controller = com.cchharness.core.TerminalController(api, "cch00000001", scope)
+        controller.start()
+        rule.setContent { HarnessTheme { com.cchharness.app.ui.TerminalScreen("t", controller, 14, {}, {}, {}) } }
+        api.termEvents.tryEmit(com.cchharness.core.TermEvent.Exited)
+        val until = System.currentTimeMillis() + 10_000
+        while (controller.status.value != com.cchharness.core.TermStatus.Ended && System.currentTimeMillis() < until) Thread.sleep(20)
+        rule.waitForIdle()
+        rule.onNodeWithTag("term-banner").assertTextContains("终端已结束", substring = true)
+        scope.cancel()
     }
 }

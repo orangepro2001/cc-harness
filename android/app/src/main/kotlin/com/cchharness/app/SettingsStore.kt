@@ -7,6 +7,11 @@ interface SettingsStore {
     var baseUrl: String
     var user: String
     var token: String
+
+    /** Terminal font size in sp. */
+    var termFontSp: Int
+        get() = 14
+        set(_) {}
 }
 
 class SharedPrefsSettings(context: Context) : SettingsStore {
@@ -23,4 +28,8 @@ class SharedPrefsSettings(context: Context) : SettingsStore {
     override var token: String
         get() = prefs.getString("token", "").orEmpty()
         set(v) = prefs.edit().putString("token", v).apply()
+
+    override var termFontSp: Int
+        get() = prefs.getInt("termFontSp", 14)
+        set(v) = prefs.edit().putInt("termFontSp", v).apply()
 }

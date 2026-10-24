@@ -69,6 +69,8 @@ fun SessionListScreen(
     usage: Usage? = null,
     usageError: String? = null,
     onImport: () -> Unit = {},
+    showTerminal: Boolean = false,
+    onTerminals: () -> Unit = {},
 ) {
     var confirmDelete by remember { mutableStateOf<SessionInfo?>(null) }
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
@@ -136,6 +138,16 @@ fun SessionListScreen(
                     shape = RoundedCornerShape(50),
                     modifier = Modifier.testTag("import-local"),
                 )
+                if (showTerminal) {
+                    AssistChip(
+                        onClick = onTerminals,
+                        label = { Text("＞_ 终端") },
+                        colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                        border = null,
+                        shape = RoundedCornerShape(50),
+                        modifier = Modifier.testTag("open-terminals"),
+                    )
+                }
                 AssistChip(
                     onClick = onCheckUpdate,
                     enabled = update !is UpdateState.Checking,

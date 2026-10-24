@@ -608,4 +608,73 @@ class AppViewModelTest {
         assertEquals(12.0, v.usage.value?.limits?.single()?.percent, "the last good figures stay visible")
         v.viewModelScope.cancel()
     }
+
+    // ---- terminals ----
+
+    @Test
+    fun terminalsListCreateOpenAndLeave() = run {
+        val api = FakeApi().also { it.onMe = { com.cchharness.core.Me("tony", terminal = true) } }
+        api.terminals += com.cchharness.core.TerminalInfo("cch00000001", "old", "shell", "/work")
+        val v = vm(FakeSettings("http://h:1", "tony", "tok"), api)
+        assertTrue(v.me.value!!.terminal)
+
+        v.openTerminals()
+        runCurrent()
+        assertEquals(Screen.Terminals, v.screen.value)
+        assertEquals(listOf("cch00000001"), v.terminals.value.map { it.id })
+
+        v.createTerminal(com.cchharness.core.CreateTerminal(title = "build", cwd = "/work"))
+        runCurrent()
+        assertEquals(Screen.Terminal("cch00000002"), v.screen.value)
+        assertEquals("build", v.terminal.value!!.info.title)
+        assertTrue(api.calls.any { it.startsWith("term-stream:cch00000002") })
+
+        v.closeTerminalScreen() // leaving keeps the terminal running on the server
+        runCurrent()
+        assertEquals(Screen.Terminals, v.screen.value)
+        assertNull(v.terminal.value)
+        assertTrue(api.calls.none { it.startsWith("term-delete") })
+
+        v.openTerminal("cch00000001")
+        runCurrent()
+        assertEquals(Screen.Terminal("cch00000001"), v.screen.value)
+        v.killTerminal("cch00000001")
+        runCurrent()
+        assertEquals(Screen.Terminals, v.screen.value)
+        assertEquals(listOf("cch00000002"), v.terminals.value.map { it.id })
+        assertTrue("term-delete:cch00000001" in api.calls)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun terminalErrorsAreShownNotThrown() = run {
+        val api = FakeApi().also { it.onMe = { com.cchharness.core.Me("tony", terminal = true) } }
+        api.onCreateTerminal = { throw ApiException(400, "at most 8 terminals per user: close one first") }
+        val v = vm(FakeSettings("http://h:1", "tony", "tok"), api)
+        v.openTerminals()
+        v.createTerminal(com.cchharness.core.CreateTerminal())
+        runCurrent()
+        assertEquals(Screen.Terminals, v.screen.value)
+        assertTrue(v.terminalError.value!!.contains("at most 8"))
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun takeOverResumesTheChatSessionInTheRealCli() = run {
+        val api = FakeApi().also {
+            it.onMe = { com.cchharness.core.Me("tony", terminal = true) }
+            it.sessions += info("sess-1", "my chat")
+        }
+        val v = vm(FakeSettings("http://h:1", "tony", "tok"), api)
+        v.open("sess-1")
+        runCurrent()
+        assertEquals(Screen.Chat("sess-1"), v.screen.value)
+
+        v.takeOverInTerminal()
+        runCurrent()
+        assertTrue("term-create:claude:sess-1:" in api.calls)
+        assertIs<Screen.Terminal>(v.screen.value)
+        assertNull(v.chat.value)
+        v.viewModelScope.cancel()
+    }
 }

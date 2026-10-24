@@ -116,6 +116,20 @@ interface HarnessApi {
 
     /** Event stream that survives disconnects by resuming from the last seen sequence. */
     fun events(sessionId: String, after: Long = 0): Flow<StreamEvent>
+
+    // ---- terminal (only when [Me.terminal]) ----
+    suspend fun listTerminals(): List<TerminalInfo>
+    suspend fun createTerminal(req: CreateTerminal): TerminalInfo
+    suspend fun deleteTerminal(id: String)
+
+    /**
+     * One screen connection: [TermEvent.Attached], then output until the connection ends. The flow
+     * completes or throws when the link drops (the caller reconnects); [TermEvent.Exited] means the
+     * terminal itself is gone.
+     */
+    fun terminalStream(id: String, cols: Int, rows: Int): Flow<TermEvent>
+    suspend fun terminalInput(attachment: String, data: ByteArray)
+    suspend fun terminalResize(attachment: String, cols: Int, rows: Int)
 }
 
 /** A file to upload, read lazily so large files are streamed rather than held in memory. */
@@ -382,6 +396,69 @@ class HarnessClient(
         }
     }
 
+    // ---- terminal ----
+
+    override suspend fun listTerminals(): List<TerminalInfo> =
+        HarnessJson.parseToJsonElement(send("GET", listOf("api", "terminals"))).jsonObject["terminals"]
+            ?.let { HarnessJson.decodeFromJsonElement(kotlinx.serialization.builtins.ListSerializer(TerminalInfo.serializer()), it) }
+            ?: emptyList()
+
+    override suspend fun createTerminal(req: CreateTerminal): TerminalInfo = HarnessJson.decodeFromString(
+        TerminalInfo.serializer(),
+        send("POST", listOf("api", "terminals"), HarnessJson.encodeToJsonElement(CreateTerminal.serializer(), req)),
+    )
+
+    override suspend fun deleteTerminal(id: String) {
+        send("DELETE", listOf("api", "terminals", id))
+    }
+
+    override fun terminalStream(id: String, cols: Int, rows: Int): Flow<TermEvent> = flow {
+        val req = getRequest(listOf("api", "terminals", id, "stream"), listOf("cols" to cols.toString(), "rows" to rows.toString()))
+            .header("Accept", "text/event-stream").build()
+        val call = sse.newCall(req)
+        val registration = currentCoroutineContext()[Job]?.invokeOnCompletion { call.cancel() }
+        try {
+            call.execute().use { resp ->
+                if (!resp.isSuccessful) throw errorFor(resp, resp.body?.string().orEmpty())
+                val source = resp.body?.source() ?: return@use
+                while (true) {
+                    val line = source.readUtf8Line() ?: break
+                    if (!line.startsWith("data: ")) continue
+                    val o = try {
+                        HarnessJson.parseToJsonElement(line.substring(6)).jsonObject
+                    } catch (e: Exception) {
+                        continue
+                    }
+                    o.str("attach")?.let { emit(TermEvent.Attached(it)) }
+                    o.str("d")?.let { emit(TermEvent.Output(java.util.Base64.getDecoder().decode(it))) }
+                    if (o["exit"] != null) {
+                        emit(TermEvent.Exited)
+                        break
+                    }
+                }
+            }
+        } catch (e: IOException) {
+            currentCoroutineContext().ensureActive()
+            throw e
+        } finally {
+            registration?.dispose()
+        }
+    }.flowOn(Dispatchers.IO)
+
+    override suspend fun terminalInput(attachment: String, data: ByteArray) {
+        val b = Request.Builder().url(url(listOf("api", "term-attachments", attachment, "input")))
+        token?.let { b.header("Authorization", "Bearer $it") }
+        b.post(data.toRequestBody("application/octet-stream".toMediaType()))
+        exec(b.build())
+    }
+
+    override suspend fun terminalResize(attachment: String, cols: Int, rows: Int) {
+        send(
+            "POST", listOf("api", "term-attachments", attachment, "resize"),
+            buildJsonObject { put("cols", cols); put("rows", rows) },
+        )
+    }
+
     // ---- plumbing ----
 
     private fun url(segments: List<String>, query: List<Pair<String, String>> = emptyList()): HttpUrl =
@@ -391,8 +468,8 @@ class HarnessClient(
         }.build()
 
     /** A GET request builder for [segments] carrying the bearer token, if any. */
-    private fun getRequest(segments: List<String>): Request.Builder =
-        Request.Builder().url(url(segments)).apply {
+    private fun getRequest(segments: List<String>, query: List<Pair<String, String>> = emptyList()): Request.Builder =
+        Request.Builder().url(url(segments, query)).apply {
             token?.let { header("Authorization", "Bearer $it") }
         }
 
