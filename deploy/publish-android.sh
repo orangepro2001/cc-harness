@@ -7,7 +7,8 @@
 # versionCode/versionName come from android/gradle.properties; bump
 # appVersionCode there for every release (installed apps only update when the
 # published versionCode is higher). Every release must be signed with the same
-# key, otherwise Android refuses the update: keep ~/.android/debug.keystore.
+# key, otherwise Android refuses the update: keep ~/.config/cc-harness/cc-harness-release.jks
+# (and android-signing.properties next to it) and back them up.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,10 +27,25 @@ done
 . "$root/android/env.sh"
 
 if [ "$build" = 1 ]; then
-  (cd "$root/android" && ./gradlew --no-daemon -q :app:assembleDebug)
+  (cd "$root/android" && ./gradlew --no-daemon -q :app:assembleRelease)
 fi
-apk="$root/android/app/build/outputs/apk/debug/app-debug.apk"
-[ -f "$apk" ] || { echo "APK not found: $apk" >&2; exit 1; }
+apk="$root/android/app/build/outputs/apk/release/app-release.apk"
+if [ ! -f "$apk" ]; then
+  [ -f "$root/android/app/build/outputs/apk/release/app-release-unsigned.apk" ] \
+    && echo "release APK is unsigned: create ~/.config/cc-harness/android-signing.properties (see README)" >&2 \
+    || echo "APK not found: $apk" >&2
+  exit 1
+fi
+apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)"
+cert="$("$apksigner" verify --print-certs "$apk" | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)"
+[ -n "$cert" ] || { echo "APK signature does not verify" >&2; exit 1; }
+# Every release must carry the same signing certificate, otherwise installed apps cannot update.
+pinned="${HARNESS_DATA:-$HOME/.local/share/cc-harness}/android-signer.sha256"
+if [ -f "$pinned" ] && [ "$(cat "$pinned")" != "$cert" ]; then
+  echo "signing certificate changed (expected $(cat "$pinned")): installed apps would refuse this update" >&2
+  exit 1
+fi
+mkdir -p "$(dirname "$pinned")" && echo "$cert" > "$pinned"
 
 aapt2="$(ls -d "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)"
 badging="$("$aapt2" dump badging "$apk")"
@@ -60,4 +76,5 @@ with open(tmp, "w") as f:
     json.dump(doc, f, indent=2)
 os.replace(tmp, path)
 PY
+echo "signer sha256=$cert"
 echo "published $name ($code) -> $dir/$file  sha256=$sum"

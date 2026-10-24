@@ -74,7 +74,12 @@ curl -u tony:PASSWORD -X POST http://HOST:8765/api/sessions -d '{"title":"demo"}
 - **Android 自更新**：`deploy/publish-android.sh` 构建 APK、读取 versionCode，写入
   `<data>/releases/android.json`（`HARNESS_RELEASES` 可改位置）。App 登录后自动检查，也可手动点
   「检查更新」；下载后校验 SHA-256，再交给系统安装器。发布前在 `android/gradle.properties`
-  递增 `appVersionCode`；所有版本必须用同一把签名密钥（`~/.android/debug.keystore`，请备份）。
+  递增 `appVersionCode`；所有版本必须用同一把签名密钥。
+  发布走 release 构建，密钥在仓库之外：`~/.config/cc-harness/cc-harness-release.jks` 与同目录的
+  `android-signing.properties`（`storeFile/storePassword/keyAlias/keyPassword`，路径可用
+  `HARNESS_SIGNING` 覆盖），**请备份这两个文件**，丢失后已安装的 App 只能卸载重装。
+  发布脚本会校验签名并把证书指纹记在 `<data>/android-signer.sha256`，证书变化时拒绝发布。
+  生成密钥：`keytool -genkeypair -keystore cc-harness-release.jks -alias cc-harness -keyalg RSA -keysize 4096 -validity 36500`。
 
 ## 反向代理（Tailscale Serve）
 

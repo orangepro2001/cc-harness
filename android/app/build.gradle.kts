@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -16,9 +18,30 @@ android {
         versionName = project.property("appVersionName") as String
     }
 
+    // Release builds are signed with a private key kept outside the repo (see the README):
+    // storeFile/storePassword/keyAlias/keyPassword in $HARNESS_SIGNING or
+    // ~/.config/cc-harness/android-signing.properties. Without it the release build is left unsigned
+    // rather than silently falling back to the debug key.
+    val signingProps = Properties().apply {
+        val f = file(System.getenv("HARNESS_SIGNING") ?: "${System.getProperty("user.home")}/.config/cc-harness/android-signing.properties")
+        if (f.isFile) f.inputStream().use { load(it) }
+    }
+    signingConfigs {
+        if (signingProps.containsKey("storeFile")) {
+            create("release") {
+                storeFile = file(signingProps.getProperty("storeFile"))
+                storePassword = signingProps.getProperty("storePassword")
+                keyAlias = signingProps.getProperty("keyAlias")
+                keyPassword = signingProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            isDebuggable = false
+            signingConfigs.findByName("release")?.let { signingConfig = it }
         }
     }
 
@@ -28,6 +51,8 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    // lintVital would pull the lint toolchain, which the offline build does not have cached.
+    lint { checkReleaseBuilds = false }
 
     testOptions {
         unitTests {
