@@ -39,9 +39,8 @@ fun ConnectScreen(
     onConnect: (url: String, user: String, password: String) -> Unit,
 ) {
     var url by rememberSaveable { mutableStateOf(initialUrl) }
-    var user by rememberSaveable { mutableStateOf(initialUser) }
     var password by rememberSaveable { mutableStateOf("") }
-    val ready = url.isNotBlank() && user.isNotBlank() && password.isNotEmpty() && !busy
+    val ready = url.isNotBlank() && password.isNotEmpty() && !busy
 
     Column(
         Modifier
@@ -69,15 +68,6 @@ fun ConnectScreen(
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(
             shape = RoundedCornerShape(12.dp),
-            value = user,
-            onValueChange = { user = it },
-            label = { Text("用户名") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth().testTag("connect-user"),
-        )
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            shape = RoundedCornerShape(12.dp),
             value = password,
             onValueChange = { password = it },
             label = { Text("密码") },
@@ -92,7 +82,8 @@ fun ConnectScreen(
         }
         Spacer(Modifier.height(16.dp))
         Button(
-            onClick = { onConnect(url, user, password) },
+            // The server runs as one user and ignores the name; it is only sent for servers that still tell users apart.
+            onClick = { onConnect(url, initialUser.ifBlank { DEFAULT_USER }, password) },
             enabled = ready,
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier.fillMaxWidth().height(50.dp).testTag("connect-button"),
@@ -101,3 +92,5 @@ fun ConnectScreen(
         }
     }
 }
+
+private const val DEFAULT_USER = "tony"

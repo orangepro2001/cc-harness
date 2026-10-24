@@ -17,6 +17,7 @@ import (
 // Config is loaded entirely from HARNESS_* environment variables.
 type Config struct {
 	Password      string            // shared password (HARNESS_PASSWORD)
+	User          string            // HARNESS_USER: single-user mode, every login is this user whatever name is typed
 	UserPasswords map[string]string // optional per-user passwords (HARNESS_USER_PASSWORDS=alice=pw,bob=pw)
 	Binds         []string          // "auto" or host[:port] entries (HARNESS_BIND)
 	Port          string            // default port (HARNESS_PORT)
@@ -75,6 +76,16 @@ func LoadConfig() (Config, error) {
 	c.Password = os.Getenv("HARNESS_PASSWORD")
 	if c.Password == "" {
 		return c, errors.New("HARNESS_PASSWORD is required")
+	}
+
+	if u := strings.ToLower(strings.TrimSpace(os.Getenv("HARNESS_USER"))); u != "" {
+		if !validUser(u) {
+			return c, fmt.Errorf("HARNESS_USER: invalid name %q", u)
+		}
+		if os.Getenv("HARNESS_USER_PASSWORDS") != "" {
+			return c, errors.New("HARNESS_USER and HARNESS_USER_PASSWORDS are mutually exclusive")
+		}
+		c.User = u
 	}
 
 	c.UserPasswords = map[string]string{}
@@ -183,6 +194,9 @@ func loadTerminalConfig(c *Config) error {
 	}
 	for _, u := range splitList(os.Getenv("HARNESS_TERMINAL"), ",") {
 		u = strings.ToLower(u)
+		if u == "1" || u == "true" || u == "yes" || u == "on" {
+			u = "*" // plain "on": fine in single-user mode, where there is only one user
+		}
 		if u != "*" && !validUser(u) {
 			return fmt.Errorf("HARNESS_TERMINAL: bad user %q", u)
 		}

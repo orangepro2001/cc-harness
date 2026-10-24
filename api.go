@@ -215,6 +215,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auth.Succeed(ip)
+	user = a.auth.Identity(user)
 	tok := a.auth.Issue(user)
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: tok, Path: a.cookiePath(), HttpOnly: true,

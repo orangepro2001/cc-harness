@@ -115,7 +115,7 @@ class AppViewModelTest {
 
         api.onLogin = { _, _ -> throw AuthException("invalid") }
         v.connect("h:1", "u", "p"); runCurrent()
-        assertEquals("用户名或密码错误", v.connectError.value)
+        assertEquals("密码错误", v.connectError.value)
         assertEquals(Screen.Connect, v.screen.value)
 
         api.onLogin = { _, _ -> throw RateLimitedException("locked", 299) }

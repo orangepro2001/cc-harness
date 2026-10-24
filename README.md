@@ -47,6 +47,13 @@ journalctl --user -u cc-harness -f
 curl -u tony:PASSWORD -X POST http://HOST:8765/api/sessions -d '{"title":"demo"}'
 ```
 
+## 单用户模式
+
+个人使用时设 `HARNESS_USER=tony`：任何登录都是这个用户，输入什么用户名都一样，只校验密码；网页和 App 的登录页
+不再有用户名输入框，所有设备看到同一批会话。已发出的旧令牌继续有效（统一映射到该用户）。与
+`HARNESS_USER_PASSWORDS` 互斥。不设置时仍是原来的多用户模式（各用户的会话和工作区互相隔离）。
+Claude 的 OAuth 凭据属于服务器上的操作系统用户（`~/.claude`），与这里的用户名无关。
+
 ## 会话接管（本机 CLI / VS Code ⇄ 网页 / 手机）
 
 会话的唯一事实来源是 claude 写的 `<claude home>/projects/<cwd>/<id>.jsonl`，终端、VS Code 插件和本服务
@@ -86,7 +93,7 @@ curl -u tony:PASSWORD -X POST http://HOST:8765/api/sessions -d '{"title":"demo"}
 App 里可以打开服务器上的**真实 shell**（会话列表的「＞_ 终端」），也可以在聊天页菜单里「在终端中接管」，
 把该会话用真正的 `claude --resume` 命令行接着聊。网页端没有终端入口。
 
-- **开启**：`HARNESS_TERMINAL=用户名[,用户名]`（`*` = 所有用户），重启服务。需要服务器装有 tmux。
+- **开启**：`HARNESS_TERMINAL=1`（单用户模式）或 `HARNESS_TERMINAL=用户名[,用户名]`（`*` = 所有用户），重启服务。需要服务器装有 tmux。
   不设置就完全关闭：接口返回 403，`/api/me` 的 `terminal` 为 false，App 不显示入口。
 - **来源限制**：只接受本机和 Tailscale 来源的请求（`HARNESS_TERMINAL_NETS`，默认
   `127.0.0.0/8,::1/128,100.64.0.0/10,fd7a:115c:a1e0::/48`），按 TCP 对端地址判断、不信任代理头。

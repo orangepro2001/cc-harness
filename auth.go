@@ -81,19 +81,31 @@ func (a *Auth) sign(payload string) string {
 // CheckPassword compares in constant time. A user with a dedicated password
 // can no longer log in with the shared one.
 func (a *Auth) CheckPassword(user, pw string) bool {
-	if !validUser(user) {
-		return false
-	}
 	want := a.cfg.Password
-	if p, ok := a.cfg.UserPasswords[user]; ok {
-		want = p
+	if a.cfg.User == "" { // single-user mode ignores the name: only the password counts
+		if !validUser(user) {
+			return false
+		}
+		if p, ok := a.cfg.UserPasswords[user]; ok {
+			want = p
+		}
 	}
 	h1 := sha256.Sum256([]byte(pw))
 	h2 := sha256.Sum256([]byte(want))
 	return subtle.ConstantTimeCompare(h1[:], h2[:]) == 1
 }
 
+// Identity is the user a login or token maps to: the configured one in single-user mode, so
+// tokens issued before the switch (carrying whatever name was typed then) keep working.
+func (a *Auth) Identity(user string) string {
+	if a.cfg.User != "" {
+		return a.cfg.User
+	}
+	return user
+}
+
 func (a *Auth) Issue(user string) string {
+	user = a.Identity(user)
 	exp := a.now().Add(a.cfg.TokenTTL).Unix()
 	payload := base64.RawURLEncoding.EncodeToString([]byte(user + "|" + strconv.FormatInt(exp, 10)))
 	return payload + "." + a.sign(payload)
@@ -197,20 +209,20 @@ func (a *Auth) Authenticate(r *http.Request) (string, error) {
 	}
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		if u, ok := a.Verify(strings.TrimSpace(h[7:])); ok {
-			return u, nil
+			return a.Identity(u), nil
 		}
 		return "", errBadCreds
 	}
 	if c, err := r.Cookie(cookieName); err == nil {
 		if u, ok := a.Verify(c.Value); ok {
-			return u, nil
+			return a.Identity(u), nil
 		}
 	}
 	if user, pw, ok := r.BasicAuth(); ok {
 		user = strings.ToLower(user)
 		if a.CheckPassword(user, pw) {
 			a.Succeed(ip)
-			return user, nil
+			return a.Identity(user), nil
 		}
 		a.Fail(ip)
 		return "", errBadCreds

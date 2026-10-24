@@ -180,7 +180,7 @@ class AppViewModel(
             } catch (e: RateLimitedException) {
                 _connectError.value = "失败次数过多,请 ${e.retryAfterSeconds} 秒后再试"
             } catch (e: AuthException) {
-                _connectError.value = "用户名或密码错误"
+                _connectError.value = "密码错误"
             } catch (e: ApiException) {
                 _connectError.value = "服务器返回错误: ${e.message}"
             } catch (e: IOException) {
