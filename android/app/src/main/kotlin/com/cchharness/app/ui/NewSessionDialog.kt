@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.cchharness.core.CreateSession
 import com.cchharness.core.DirListing
+import com.cchharness.core.EFFORTS
 import com.cchharness.core.MODELS
 import com.cchharness.core.Me
 import com.cchharness.core.PERMISSION_MODES
@@ -40,6 +41,7 @@ fun NewSessionDialog(
     var title by remember { mutableStateOf("") }
     var cwd by remember { mutableStateOf("") }
     var model by remember { mutableStateOf("") }
+    var effort by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf("manual") }
     var picking by remember { mutableStateOf(false) }
     val modes = PERMISSION_MODES.filter { it.first != "bypassPermissions" || me.allowBypass }
@@ -70,13 +72,14 @@ fun NewSessionDialog(
                     OutlinedButton(onClick = { picking = true }, modifier = Modifier.testTag("new-pick")) { Text("选择…") }
                 }
                 Dropdown("模型", MODELS, model, { model = it }, tag = "new-model")
+                Dropdown("Effort", EFFORTS, effort, { effort = it }, tag = "new-effort")
                 Dropdown("权限", modes, mode, { mode = it }, tag = "new-mode")
                 if (error != null) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 4.dp).testTag("new-error"))
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onCreate(CreateSession(title = title.trim(), cwd = cwd.trim(), model = model, permissionMode = mode)) },
+                onClick = { onCreate(CreateSession(title = title.trim(), cwd = cwd.trim(), model = model, effort = effort, permissionMode = mode)) },
                 modifier = Modifier.testTag("new-create"),
             ) { Text("创建") }
         },

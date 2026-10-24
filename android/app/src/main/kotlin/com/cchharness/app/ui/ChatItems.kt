@@ -44,6 +44,17 @@ import com.cchharness.core.PermState
 import com.cchharness.core.PermissionItem
 import com.cchharness.core.ToolCall
 import com.cchharness.core.UserMessage
+import com.cchharness.core.Attachment
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 
@@ -61,9 +72,10 @@ fun ChatItemView(
     onAllow: (requestId: String, remember: Boolean) -> Unit,
     onDeny: (requestId: String) -> Unit,
     onAnswer: (PermissionItem, Map<String, String>) -> Unit,
+    loadAttachment: suspend (Attachment) -> ByteArray? = { null },
 ) {
     when (item) {
-        is UserMessage -> UserBubble(item.text)
+        is UserMessage -> UserBubble(item.text, item.attachments, loadAttachment)
         is AssistantText -> AssistantBubble(item.text)
         is ToolCall -> ToolCallCard(item)
         is PermissionItem -> PermissionCard(item, onAllow, onDeny, onAnswer)
@@ -72,16 +84,65 @@ fun ChatItemView(
 }
 
 @Composable
-fun UserBubble(text: String) {
+fun UserBubble(
+    text: String,
+    attachments: List<Attachment> = emptyList(),
+    loadAttachment: suspend (Attachment) -> ByteArray? = { null },
+) {
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
         Surface(
             color = MaterialTheme.colorScheme.primaryContainer,
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier.padding(start = 48.dp).testTag("user-bubble"),
         ) {
-            SelectionContainer { Text(text, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) }
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (text.isNotBlank()) SelectionContainer { Text(text) }
+                attachments.forEach { AttachmentView(it, loadAttachment) }
+            }
         }
     }
+}
+
+/** An image shows as a thumbnail (fetched on demand); any other file as a labelled chip. */
+@Composable
+fun AttachmentView(att: Attachment, load: suspend (Attachment) -> ByteArray?) {
+    if (att.isImage) {
+        val bitmap by produceState<ImageBitmap?>(null, att.id) {
+            value = withContext(Dispatchers.Default) { load(att)?.let { decodeThumbnail(it, THUMB_MAX_PX) } }
+        }
+        val bmp = bitmap
+        if (bmp != null) {
+            Image(
+                bitmap = bmp,
+                contentDescription = att.name,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.heightIn(max = 200.dp).clip(RoundedCornerShape(8.dp)).testTag("att-image-${att.id}"),
+            )
+        } else {
+            Text("🖼 ${att.name}", modifier = Modifier.testTag("att-${att.id}"))
+        }
+    } else {
+        Text("📄 ${att.name} (${formatSize(att.size)})", modifier = Modifier.testTag("att-${att.id}"))
+    }
+}
+
+private const val THUMB_MAX_PX = 800
+
+fun formatSize(n: Long): String = when {
+    n < 1024 -> "$n B"
+    n < 1024 * 1024 -> "%.1f KB".format(n / 1024.0)
+    else -> "%.1f MB".format(n / 1048576.0)
+}
+
+/** Decodes [bytes] downsampled so neither side exceeds [maxPx]; null if it is not a readable image. */
+fun decodeThumbnail(bytes: ByteArray, maxPx: Int): ImageBitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (bounds.outWidth / (sample * 2) >= maxPx || bounds.outHeight / (sample * 2) >= maxPx) sample *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)?.asImageBitmap()
 }
 
 @Composable

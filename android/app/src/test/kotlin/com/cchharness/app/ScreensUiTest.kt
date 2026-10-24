@@ -116,9 +116,9 @@ class ScreensUiTest {
         rule.onNodeWithTag("connect-button").assertIsNotEnabled()
         rule.onNodeWithTag("connect-url").performTextInput("192.168.1.164:8765")
         rule.onNodeWithTag("connect-button").assertIsNotEnabled()
-        rule.onNodeWithTag("connect-password").performTextInput("512557")
+        rule.onNodeWithTag("connect-password").performTextInput("test-pass-1")
         rule.onNodeWithTag("connect-button").assertIsEnabled().performClick()
-        assertEquals(Triple("192.168.1.164:8765", "tony", "512557"), got)
+        assertEquals(Triple("192.168.1.164:8765", "tony", "test-pass-1"), got)
     }
 
     @Test

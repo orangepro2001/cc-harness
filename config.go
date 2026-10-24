@@ -26,7 +26,14 @@ type Config struct {
 	IdleTimeout   time.Duration     // idle claude processes are reaped after this long
 	MaxProcs      int               // max simultaneously running claude processes
 	TokenTTL      time.Duration     // login token lifetime
+	ClaudeHome    string            // HARNESS_CLAUDE_HOME: where claude keeps its data (default ~/.claude)
+	BasePath      string            // HARNESS_BASE_PATH: URL prefix when behind a path-routing proxy, e.g. /claude
+	ReleasesDir   string            // HARNESS_RELEASES: published client builds (default <data>/releases)
+	UsageURL      string            // HARNESS_USAGE_URL: plan-usage endpoint (default Anthropic's OAuth usage API)
+	MaxUpload     int64             // max bytes per uploaded file (HARNESS_MAX_UPLOAD_MB, default 25)
 }
+
+var basePathRe = regexp.MustCompile(`^[A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)*$`)
 
 var userRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
@@ -129,6 +136,22 @@ func LoadConfig() (Config, error) {
 			return c, fmt.Errorf("HARNESS_MAX_PROCS: invalid value %q", v)
 		}
 		c.MaxProcs = n
+	}
+	if bp := strings.Trim(os.Getenv("HARNESS_BASE_PATH"), "/ "); bp != "" {
+		if !basePathRe.MatchString(bp) {
+			return c, fmt.Errorf("HARNESS_BASE_PATH: invalid value %q", bp)
+		}
+		c.BasePath = "/" + bp
+	}
+	c.ClaudeHome = os.Getenv("HARNESS_CLAUDE_HOME")
+	c.ReleasesDir = os.Getenv("HARNESS_RELEASES")
+	c.UsageURL = os.Getenv("HARNESS_USAGE_URL")
+	if v := os.Getenv("HARNESS_MAX_UPLOAD_MB"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1024 {
+			return c, fmt.Errorf("HARNESS_MAX_UPLOAD_MB: invalid value %q", v)
+		}
+		c.MaxUpload = int64(n) << 20
 	}
 	return c, nil
 }

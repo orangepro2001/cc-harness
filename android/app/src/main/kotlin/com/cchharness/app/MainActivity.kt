@@ -12,7 +12,18 @@ import com.cchharness.core.HarnessClient
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels {
         viewModelFactory {
-            initializer { AppViewModel(SharedPrefsSettings(applicationContext), { url -> HarnessClient(url) }) }
+            initializer {
+                val ctx = applicationContext
+                val info = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+                AppViewModel(
+                    settings = SharedPrefsSettings(ctx),
+                    apiFactory = { url -> HarnessClient(url) },
+                    resolver = ContentResolverAttachments(ctx.contentResolver),
+                    version = AppVersion(info.longVersionCode.toInt(), info.versionName.orEmpty()),
+                    updateDir = PackageApkInstaller.updateDir(ctx),
+                    installer = PackageApkInstaller(ctx),
+                )
+            }
         }
     }
 

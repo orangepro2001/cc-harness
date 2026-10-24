@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -19,10 +20,12 @@ type API struct {
 	cfg  Config
 	auth *Auth
 	mgr  *Manager
+
+	usage *usageCache
 }
 
 func NewAPI(cfg Config, auth *Auth, mgr *Manager) *API {
-	return &API{cfg: cfg, auth: auth, mgr: mgr}
+	return &API{cfg: cfg, auth: auth, mgr: mgr, usage: &usageCache{http: &http.Client{Timeout: 10 * time.Second}}}
 }
 
 type authed func(w http.ResponseWriter, r *http.Request, user string)
@@ -83,10 +86,18 @@ func (a *API) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /api/login", a.login)
 	mux.HandleFunc("POST /api/logout", func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: a.cookiePath(), MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("GET /api/me", a.require(a.me))
+
+	mux.HandleFunc("GET /api/usage", a.require(a.getUsage))
+
+	mux.HandleFunc("GET /api/client/android/latest", a.require(a.latestRelease))
+	mux.HandleFunc("GET /api/client/android/download", a.require(a.downloadRelease))
+
+	mux.HandleFunc("GET /api/local-sessions", a.require(a.listLocalSessions))
+	mux.HandleFunc("POST /api/local-sessions/{id}/import", a.require(a.importLocalSession))
 
 	mux.HandleFunc("GET /api/fs", a.require(a.listDirs))
 	mux.HandleFunc("POST /api/fs/mkdir", a.require(a.makeDir))
@@ -97,6 +108,10 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/sessions/{id}", a.require(a.withSession(a.patchSession)))
 	mux.HandleFunc("DELETE /api/sessions/{id}", a.require(a.deleteSession))
 	mux.HandleFunc("POST /api/sessions/{id}/messages", a.require(a.withSession(a.sendMessage)))
+	mux.HandleFunc("GET /api/sessions/{id}/commands", a.require(a.withSession(a.commands)))
+	mux.HandleFunc("POST /api/sessions/{id}/uploads", a.require(a.withSession(a.upload)))
+	mux.HandleFunc("GET /api/sessions/{id}/uploads/{uid}", a.require(a.withSession(a.download)))
+	mux.HandleFunc("POST /api/sessions/{id}/sync", a.require(a.withSession(a.syncSession)))
 	mux.HandleFunc("POST /api/sessions/{id}/interrupt", a.require(a.withSession(a.interrupt)))
 	mux.HandleFunc("POST /api/sessions/{id}/stop", a.require(a.withSession(a.stop)))
 	mux.HandleFunc("POST /api/sessions/{id}/permissions/{rid}", a.require(a.withSession(a.permission)))
@@ -105,12 +120,51 @@ func (a *API) Handler() http.Handler {
 
 	sub, _ := fs.Sub(webFS, "web")
 	static := http.FileServerFS(sub)
+	index, _ := fs.ReadFile(sub, "index.html")
+	// The page loads its assets and calls the API relative to <base>, so the same
+	// build works at the root and behind a path-routing proxy (HARNESS_BASE_PATH).
+	index = bytes.Replace(index, []byte(`<base href="/">`), []byte(`<base href="`+a.cfg.BasePath+`/">`), 1)
 	mux.Handle("GET /", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(index)
+			return
+		}
 		static.ServeHTTP(w, r)
 	}))
 
-	return secure(mux)
+	return stripBase(a.cfg.BasePath, secure(mux))
+}
+
+// stripBase accepts requests both with and without the configured prefix, so
+// it does not matter whether the proxy in front strips it.
+func stripBase(base string, h http.Handler) http.Handler {
+	if base == "" {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := r.URL.Path; p == base || strings.HasPrefix(p, base+"/") {
+			r2 := new(http.Request)
+			*r2 = *r
+			u := *r.URL
+			u.Path = strings.TrimPrefix(p, base)
+			if u.Path == "" {
+				u.Path = "/"
+			}
+			u.RawPath = ""
+			r2.URL = &u
+			r = r2
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+func (a *API) cookiePath() string {
+	if a.cfg.BasePath != "" {
+		return a.cfg.BasePath
+	}
+	return "/"
 }
 
 func secure(h http.Handler) http.Handler {
@@ -155,7 +209,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	a.auth.Succeed(ip)
 	tok := a.auth.Issue(user)
 	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: tok, Path: "/", HttpOnly: true,
+		Name: cookieName, Value: tok, Path: a.cookiePath(), HttpOnly: true,
 		SameSite: http.SameSiteStrictMode, MaxAge: int(a.cfg.TokenTTL.Seconds()),
 	})
 	writeJSON(w, 200, map[string]any{"user": user, "token": tok})
@@ -210,6 +264,7 @@ func (a *API) patchSession(w http.ResponseWriter, r *http.Request, s *Session) {
 		Title          *string `json:"title"`
 		PermissionMode *string `json:"permissionMode"`
 		Model          *string `json:"model"`
+		Effort         *string `json:"effort"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -233,7 +288,17 @@ func (a *API) patchSession(w http.ResponseWriter, r *http.Request, s *Session) {
 			return
 		}
 	}
+	if req.Effort != nil {
+		if err := s.SetEffort(*req.Effort); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	writeJSON(w, 200, s.View())
+}
+
+func (a *API) commands(w http.ResponseWriter, r *http.Request, s *Session) {
+	writeJSON(w, 200, map[string]any{"commands": s.Commands()})
 }
 
 func (a *API) deleteSession(w http.ResponseWriter, r *http.Request, user string) {
@@ -250,18 +315,37 @@ func (a *API) deleteSession(w http.ResponseWriter, r *http.Request, user string)
 
 func (a *API) sendMessage(w http.ResponseWriter, r *http.Request, s *Session) {
 	var req struct {
-		Text string `json:"text"`
+		Text        string   `json:"text"`
+		Attachments []string `json:"attachments"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 512<<10)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if strings.TrimSpace(req.Text) == "" {
-		writeErr(w, http.StatusBadRequest, "text is required")
+	if strings.TrimSpace(req.Text) == "" && len(req.Attachments) == 0 {
+		writeErr(w, http.StatusBadRequest, "text or attachments required")
 		return
 	}
-	if err := s.Send(req.Text); err != nil {
+	if len(req.Attachments) > maxAttachments {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("at most %d attachments per message", maxAttachments))
+		return
+	}
+	var atts []Attachment
+	seen := map[string]bool{}
+	for _, id := range req.Attachments {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		att, err := s.LoadUpload(id)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "unknown attachment "+id)
+			return
+		}
+		atts = append(atts, att)
+	}
+	if err := s.Send(req.Text, atts); err != nil {
 		code := http.StatusInternalServerError
 		if errors.Is(err, errTooBusy) {
 			code = http.StatusTooManyRequests
@@ -283,6 +367,14 @@ func (a *API) interrupt(w http.ResponseWriter, r *http.Request, s *Session) {
 func (a *API) stop(w http.ResponseWriter, r *http.Request, s *Session) {
 	s.Stop("stopped by user")
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+}
+
+// syncSession folds conversation added outside the harness (the same session
+// continued in a terminal or VS Code) into the history.
+func (a *API) syncSession(w http.ResponseWriter, r *http.Request, s *Session) {
+	n := s.Sync()
+	v := s.View()
+	writeJSON(w, 200, map[string]any{"synced": n, "session": v})
 }
 
 func (a *API) permission(w http.ResponseWriter, r *http.Request, s *Session) {

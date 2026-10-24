@@ -3,6 +3,8 @@
 // DOM APIs / escaped strings, nothing is fetched from third parties.
 
 const $ = (id) => document.getElementById(id);
+// URL prefix the server is mounted at (from <base href>), "" at the root.
+const P = new URL(document.baseURI).pathname.replace(/\/$/, "");
 const MODES = {
   manual: "逐项询问",
   acceptEdits: "自动接受编辑",
@@ -11,6 +13,8 @@ const MODES = {
   dontAsk: "不询问(拒绝未授权)",
   bypassPermissions: "全部放行",
 };
+const MODELS = ["opus", "sonnet", "haiku", "fable"];
+const EFFORTS = { "": "默认", low: "低", medium: "中", high: "高", xhigh: "超高", max: "最高" };
 const STATUS = { stopped: "进程未运行", idle: "空闲", busy: "运行中", awaiting_permission: "等待授权" };
 
 let me = null;
@@ -21,10 +25,13 @@ let tools = {}; // tool_use_id -> result element
 let perms = {}; // request id -> card element
 let live = null; // {el, text}
 let renderQueued = false;
+let atts = []; // composer attachments: {name, el, id?, promise}
+let commands = []; // slash commands of the current session
+let slashSel = 0;
 
 // ---------- helpers ----------
 async function api(method, path, body) {
-  const r = await fetch(path, {
+  const r = await fetch(P + path, {
     method,
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -145,7 +152,23 @@ function renderBar() {
   $("title").textContent = cur.title || "(未命名)";
   $("meta").textContent = cur.cwd + (cur.model ? " · " + cur.model : "") + " · " + cur.id;
   $("mode").value = cur.permissionMode;
+  setModel($("model"), cur.model);
+  $("effort").value = cur.effort || "";
   setStatus(cur.status);
+}
+
+// Selects a model, adding it when it is a custom value the list lacks.
+function setModel(sel, v) {
+  v = v || "";
+  if (v && ![...sel.options].some((o) => o.value === v)) sel.appendChild(new Option(v, v));
+  sel.value = v;
+}
+
+function fillModelEffort(modelSel, effortSel) {
+  modelSel.textContent = ""; effortSel.textContent = "";
+  modelSel.appendChild(new Option("默认", ""));
+  for (const m of MODELS) modelSel.appendChild(new Option(m, m));
+  for (const [k, v] of Object.entries(EFFORTS)) effortSel.appendChild(new Option(k ? "effort: " + v : "effort 默认", k));
 }
 
 // ---------- session view ----------
@@ -159,22 +182,31 @@ function openSession(id) {
   if (!s) return;
   cur = s;
   tools = {}; perms = {}; live = null;
+  clearAtts();
+  commands = [];
+  hideSlash();
+  loadCommands(id);
   $("log").textContent = "";
   $("empty").hidden = true;
   renderBar();
   loadSessions();
   location.hash = id;
 
-  es = new EventSource("/api/sessions/" + id + "/events");
-  es.onmessage = (m) => {
-    let ev;
-    try { ev = JSON.parse(m.data); } catch (_) { return; }
-    handle(ev.data);
-  };
-  es.onerror = async () => {
-    // EventSource retries by itself; only check whether our login expired.
-    try { await api("GET", "/api/me"); } catch (_) {}
-  };
+  // Fold in anything added to this session from a terminal / VS Code before
+  // replaying its history. A failed sync must not keep the session closed.
+  api("POST", "/api/sessions/" + id + "/sync").catch(() => {}).then(() => {
+    if (!cur || cur.id !== id) return;
+    es = new EventSource(P + "/api/sessions/" + id + "/events");
+    es.onmessage = (m) => {
+      let ev;
+      try { ev = JSON.parse(m.data); } catch (_) { return; }
+      handle(ev.data);
+    };
+    es.onerror = async () => {
+      // EventSource retries by itself; only check whether our login expired.
+      try { await api("GET", "/api/me"); } catch (_) {}
+    };
+  });
 }
 
 function handle(d) {
@@ -182,7 +214,10 @@ function handle(d) {
   switch (d.type) {
     case "harness": return onHarness(d);
     case "system":
-      if (d.subtype === "init") add(el("div", "note", "已连接 · " + (d.model || "") + " · " + (d.permissionMode || "")));
+      if (d.subtype === "init") {
+        add(el("div", "note", "已连接 · " + (d.model || "") + " · " + (d.permissionMode || "")));
+        if (Array.isArray(d.slash_commands) && d.slash_commands.length) commands = d.slash_commands;
+      }
       return;
     case "assistant": return onAssistant(d);
     case "user": return onToolResults(d);
@@ -197,6 +232,22 @@ function onHarness(d) {
     case "user_message": {
       const m = add(el("div", "msg user", d.text));
       m.dataset.kind = "user";
+      if (Array.isArray(d.attachments) && d.attachments.length) {
+        const box = el("div", "att");
+        for (const a of d.attachments) {
+          const url = attUrl(cur.id, a.id);
+          if (a.kind === "image") {
+            const link = el("a"); link.href = url; link.target = "_blank"; link.rel = "noopener";
+            const img = el("img"); img.src = url; img.alt = a.name; img.loading = "lazy";
+            link.appendChild(img); box.appendChild(link);
+          } else {
+            const link = el("a", "", "📄 " + a.name + " (" + fmtSize(a.size) + ")");
+            link.href = url; link.download = a.name;
+            box.appendChild(link);
+          }
+        }
+        m.appendChild(box);
+      }
       break;
     }
     case "status":
@@ -204,9 +255,13 @@ function onHarness(d) {
       setStatus(d.status);
       loadSessions();
       break;
+    case "imported": add(el("div", "note", "已接管本机会话 · " + d.messages + " 条历史")); break;
+    case "synced": add(el("div", "note", "终端/VS Code 中继续过本会话 · 已同步 " + d.messages + " 条新内容")); break;
     case "process_started": add(el("div", "note", d.resume ? "后台进程已启动 (恢复上下文)" : "后台进程已启动")); break;
     case "process_exit": add(el("div", "note", "后台进程已退出: " + d.reason)); break;
     case "error": add(el("div", "note bad", d.message)); break;
+    case "model_changed": if (cur) { cur.model = d.model; setModel($("model"), d.model); } break;
+    case "effort_changed": if (cur) { cur.effort = d.effort; $("effort").value = d.effort || ""; } break;
     case "mode_changed": if (cur) { cur.permissionMode = d.permissionMode; $("mode").value = d.permissionMode; } break;
     case "permission_resolved": {
       const c = perms[d.requestId];
@@ -363,14 +418,121 @@ function onPermission(d) {
 // ---------- actions ----------
 async function send() {
   const t = $("input").value;
-  if (!t.trim() || !cur) return;
+  if ((!t.trim() && !atts.length) || !cur) return;
+  const sid = cur.id;
+  if (atts.some((a) => !a.id && !a.failed && a.promise)) {
+    await Promise.allSettled(atts.map((a) => a.promise));
+  }
+  if (atts.some((a) => a.failed)) {
+    add(el("div", "note bad", "有附件上传失败，请移除后再发送"));
+    return;
+  }
+  const ids = atts.map((a) => a.id);
+  const keep = atts;
   $("input").value = "";
+  atts = [];
+  renderAtts();
+  hideSlash();
   try {
-    await api("POST", "/api/sessions/" + cur.id + "/messages", { text: t });
+    await api("POST", "/api/sessions/" + sid + "/messages", ids.length ? { text: t, attachments: ids } : { text: t });
   } catch (e) {
     $("input").value = t;
+    atts = keep;
+    renderAtts();
     add(el("div", "note bad", "发送失败: " + e.message));
   }
+}
+
+// ---------- attachments ----------
+const attUrl = (sid, id) => P + "/api/sessions/" + sid + "/uploads/" + id;
+
+function fmtSize(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1048576).toFixed(1) + " MB";
+}
+
+function renderAtts() {
+  const box = $("atts");
+  box.textContent = "";
+  box.hidden = atts.length === 0;
+  for (const a of atts) {
+    const chip = el("span", "chip-att" + (a.id ? "" : a.failed ? " bad" : " up"));
+    if (a.preview) { const im = el("img"); im.src = a.preview; im.alt = ""; chip.appendChild(im); }
+    chip.appendChild(el("span", "nm", a.name + (a.failed ? " — " + a.failed : a.id ? "" : " — 上传中…")));
+    const x = el("button", "", "×");
+    x.type = "button"; x.title = "移除"; x.setAttribute("aria-label", "移除 " + a.name);
+    x.onclick = () => { atts = atts.filter((y) => y !== a); if (a.preview) URL.revokeObjectURL(a.preview); renderAtts(); };
+    chip.appendChild(x);
+    box.appendChild(chip);
+  }
+}
+
+function clearAtts() {
+  atts.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
+  atts = [];
+  renderAtts();
+}
+
+function addFiles(files) {
+  if (!cur) return;
+  const sid = cur.id;
+  for (const f of files) {
+    if (atts.length >= 10) { add(el("div", "note bad", "每条消息最多 10 个附件")); break; }
+    const a = { name: f.name || "pasted-" + Date.now(), preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : null };
+    a.promise = fetch(P + "/api/sessions/" + sid + "/uploads?name=" + encodeURIComponent(a.name), {
+      method: "POST", body: f, credentials: "same-origin",
+      headers: { "Content-Type": f.type || "application/octet-stream" },
+    }).then(async (r) => {
+      let data = null;
+      try { data = await r.json(); } catch (_) {}
+      if (!r.ok) throw new Error((data && data.error) || r.statusText);
+      a.id = data.id;
+    }).catch((e) => { a.failed = e.message; }).finally(renderAtts);
+    atts.push(a);
+  }
+  renderAtts();
+}
+
+// ---------- slash commands ----------
+async function loadCommands(id) {
+  try {
+    const r = await api("GET", "/api/sessions/" + id + "/commands");
+    if (cur && cur.id === id && r.commands.length) commands = r.commands;
+  } catch (_) {}
+}
+
+function slashMatches() {
+  const v = $("input").value;
+  if (!v.startsWith("/") || /\s/.test(v)) return [];
+  const q = v.slice(1).toLowerCase();
+  const starts = commands.filter((c) => c.toLowerCase().startsWith(q));
+  const rest = commands.filter((c) => !c.toLowerCase().startsWith(q) && c.toLowerCase().includes(q));
+  return starts.concat(rest).slice(0, 50);
+}
+
+function hideSlash() { $("slash").hidden = true; $("slash").textContent = ""; slashSel = 0; }
+
+function showSlash() {
+  const m = slashMatches();
+  const ul = $("slash");
+  if (!m.length) return hideSlash();
+  slashSel = Math.min(slashSel, m.length - 1);
+  ul.textContent = "";
+  m.forEach((c, i) => {
+    const li = el("li", i === slashSel ? "sel" : "", "/" + c);
+    li.onmousedown = (e) => { e.preventDefault(); pickSlash(c); };
+    ul.appendChild(li);
+  });
+  ul.hidden = false;
+  const sel = ul.querySelector(".sel");
+  if (sel) sel.scrollIntoView({ block: "nearest" });
+}
+
+function pickSlash(c) {
+  $("input").value = "/" + c + " ";
+  hideSlash();
+  $("input").focus();
 }
 
 function showLogin() {
@@ -384,6 +546,8 @@ async function enterApp() {
   $("login").hidden = true;
   $("app").hidden = false;
   $("who").textContent = me.user;
+  fillModelEffort($("model"), $("effort"));
+  fillModelEffort($("n-model"), $("n-effort"));
   const sel = $("mode"), nsel = $("n-mode");
   sel.textContent = ""; nsel.textContent = "";
   for (const [k, v] of Object.entries(MODES)) {
@@ -391,6 +555,7 @@ async function enterApp() {
     sel.appendChild(new Option(v, k));
     nsel.appendChild(new Option(v, k));
   }
+  loadUsage();
   await loadSessions();
   const id = location.hash.slice(1);
   if (id && sessions.some((s) => s.id === id)) openSession(id);
@@ -421,7 +586,7 @@ $("new-form").onsubmit = async (e) => {
   e.preventDefault();
   try {
     const s = await api("POST", "/api/sessions", {
-      title: $("n-title").value, cwd: $("n-cwd").value.trim(), model: $("n-model").value, permissionMode: $("n-mode").value,
+      title: $("n-title").value, cwd: $("n-cwd").value.trim(), model: $("n-model").value, effort: $("n-effort").value, permissionMode: $("n-mode").value,
     });
     $("dlg-new").close();
     $("n-title").value = "";
@@ -429,6 +594,69 @@ $("new-form").onsubmit = async (e) => {
     openSession(s.id);
   } catch (err) { $("new-err").textContent = err.message; }
 };
+// ---------- import local sessions ----------
+let localSessions = [];
+
+function ago(iso) {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 90) return "刚刚";
+  if (s < 5400) return Math.round(s / 60) + " 分钟前";
+  if (s < 129600) return Math.round(s / 3600) + " 小时前";
+  return Math.round(s / 86400) + " 天前";
+}
+
+function renderLocal() {
+  const q = $("i-filter").value.trim().toLowerCase();
+  const ul = $("i-list");
+  ul.textContent = "";
+  const shown = localSessions.filter((x) => !q || (x.title + " " + x.cwd).toLowerCase().includes(q));
+  if (!shown.length) ul.appendChild(el("li", "empty", localSessions.length ? "没有匹配的会话" : "没有可导入的本地会话"));
+  for (const x of shown) {
+    const li = el("li");
+    const main = el("div", "i-main");
+    main.appendChild(el("div", "i-title", (x.title || "(无标题)") + (x.active ? "  · 可能正在使用" : "")));
+    main.appendChild(el("div", "i-sub", x.cwd + " · " + ago(x.updatedAt)));
+    li.appendChild(main);
+    const b = el("button", "primary", "导入");
+    b.type = "button";
+    b.onclick = () => importLocal(x, b, false);
+    li.appendChild(b);
+    ul.appendChild(li);
+  }
+}
+
+async function importLocal(x, btn, force) {
+  $("i-err").textContent = "";
+  btn.disabled = true;
+  try {
+    const s = await api("POST", "/api/local-sessions/" + x.id + "/import", force ? { force: true } : undefined);
+    $("dlg-import").close();
+    await loadSessions();
+    openSession(s.id);
+  } catch (e) {
+    if (e.status === 409 && !force && /moments ago/.test(e.message)) {
+      if (confirm("这个会话刚刚还在被修改，可能仍在别处打开。仍要接管吗？")) return importLocal(x, btn, true);
+    } else {
+      $("i-err").textContent = e.message;
+    }
+    btn.disabled = false;
+  }
+}
+
+$("btn-import").onclick = async () => {
+  $("i-err").textContent = "";
+  $("i-filter").value = "";
+  localSessions = [];
+  renderLocal();
+  $("dlg-import").showModal();
+  try {
+    localSessions = (await api("GET", "/api/local-sessions")).sessions;
+    renderLocal();
+  } catch (e) { $("i-err").textContent = e.message; }
+};
+$("i-filter").oninput = renderLocal;
+$("i-close").onclick = () => $("dlg-import").close();
+
 // ---------- directory picker ----------
 let dirPath = "";
 async function browse(path) {
@@ -479,9 +707,41 @@ $("d-mk").onclick = async () => {
 };
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
+$("input").addEventListener("input", () => { slashSel = 0; showSlash(); });
 $("input").addEventListener("keydown", (e) => {
+  const sl = !$("slash").hidden ? slashMatches() : [];
+  if (sl.length) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      slashSel = (slashSel + (e.key === "ArrowDown" ? 1 : sl.length - 1)) % sl.length;
+      showSlash();
+      return;
+    }
+    if ((e.key === "Tab" || e.key === "Enter") && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      pickSlash(sl[slashSel]);
+      return;
+    }
+    if (e.key === "Escape") { e.preventDefault(); hideSlash(); return; }
+  }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
 });
+$("btn-attach").onclick = () => $("file").click();
+$("file").onchange = () => { addFiles([...$("file").files]); $("file").value = ""; };
+$("input").addEventListener("paste", (e) => {
+  const files = [...(e.clipboardData ? e.clipboardData.files : [])];
+  if (files.length) { e.preventDefault(); addFiles(files); }
+});
+for (const t of ["dragenter", "dragover"]) $("main").addEventListener(t, (e) => { if (cur && e.dataTransfer && [...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
+$("main").addEventListener("drop", (e) => {
+  if (!cur || !e.dataTransfer || !e.dataTransfer.files.length) return;
+  e.preventDefault();
+  addFiles([...e.dataTransfer.files]);
+});
+$("model").onchange = () =>
+  api("PATCH", "/api/sessions/" + cur.id, { model: $("model").value }).catch((e) => { add(el("div", "note bad", e.message)); setModel($("model"), cur.model); });
+$("effort").onchange = () =>
+  api("PATCH", "/api/sessions/" + cur.id, { effort: $("effort").value }).catch((e) => { add(el("div", "note bad", e.message)); $("effort").value = cur.effort || ""; });
 $("mode").onchange = () =>
   api("PATCH", "/api/sessions/" + cur.id, { permissionMode: $("mode").value }).catch((e) => { add(el("div", "note bad", e.message)); $("mode").value = cur.permissionMode; });
 $("btn-int").onclick = () => api("POST", "/api/sessions/" + cur.id + "/interrupt", {}).catch((e) => add(el("div", "note bad", e.message)));
@@ -504,5 +764,47 @@ $("title").onclick = async () => {
   loadSessions();
 };
 
+// ---------- plan usage ----------
+function fmtReset(iso) {
+  const ms = new Date(iso) - Date.now();
+  if (!(ms > 0)) return "";
+  const m = Math.round(ms / 60000);
+  if (m < 60) return m + " 分钟后重置";
+  const h = Math.floor(m / 60);
+  return h < 48 ? h + " 小时 " + (m % 60) + " 分后重置" : Math.round(h / 24) + " 天后重置";
+}
+
+async function loadUsage() {
+  const box = $("usage"), bars = $("usage-bars");
+  let u;
+  try { u = await api("GET", "/api/usage"); } catch (e) {
+    box.hidden = false;
+    bars.textContent = "";
+    bars.appendChild(el("div", "u-err", "用量不可用：" + e.message));
+    $("usage-plan").textContent = "";
+    return;
+  }
+  box.hidden = false;
+  $("usage-plan").textContent = u.plan ? "· " + u.plan : "";
+  bars.textContent = "";
+  for (const l of u.limits) {
+    const pct = Math.max(0, Math.min(100, l.percent));
+    const d = el("div", "u" + (pct >= 90 ? " bad" : pct >= 70 ? " warn" : ""));
+    const row = el("div", "u-row");
+    row.appendChild(el("span", "", l.label));
+    row.appendChild(el("span", "u-pct", Math.round(l.percent) + "%"));
+    d.appendChild(row);
+    const bar = el("div", "u-bar");
+    const fill = document.createElement("i");
+    fill.style.width = pct + "%";
+    bar.appendChild(fill);
+    d.appendChild(bar);
+    const r = l.resetsAt ? fmtReset(l.resetsAt) : "";
+    if (r) d.appendChild(el("div", "u-reset", r));
+    bars.appendChild(d);
+  }
+}
+
 setInterval(() => { if (me && !document.hidden) loadSessions(); }, 5000);
+setInterval(() => { if (me && !document.hidden) loadUsage(); }, 60000);
 boot();

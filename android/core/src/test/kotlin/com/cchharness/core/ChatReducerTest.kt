@@ -173,4 +173,22 @@ class ChatReducerTest {
         assertEquals("ls -la", summarizeInput(HarnessJson.parseToJsonElement("""{"command":"ls   -la","description":"x"}""").jsonObject))
         assertEquals("""{"a":1}""", summarizeInput(HarnessJson.parseToJsonElement("""{"a":1}""").jsonObject))
     }
+
+    @Test
+    fun attachmentsEffortAndCommandsAreReduced() {
+        val r = ChatReducer()
+        fun ev(seq: Long, json: String) = StreamEvent(seq, 0, HarnessJson.parseToJsonElement(json) as kotlinx.serialization.json.JsonObject)
+        r.apply(ev(1, """{"type":"system","subtype":"init","model":"m","slash_commands":["compact","review"]}"""))
+        r.apply(ev(2, """{"type":"harness","kind":"user_message","text":"look","attachments":[{"id":"a1","name":"p.png","kind":"image","mime":"image/png","size":5},{"bad":true}]}"""))
+        r.apply(ev(3, """{"type":"harness","kind":"effort_changed","effort":"high"}"""))
+        val s = r.snapshot()
+        assertEquals(listOf("compact", "review"), s.commands)
+        assertEquals("high", s.effort)
+        val u = s.items.filterIsInstance<UserMessage>().single()
+        assertEquals(listOf("p.png"), u.attachments.map { it.name })
+        assertTrue(u.attachments.single().isImage)
+        // an init without a command list keeps the previous one
+        r.apply(ev(4, """{"type":"system","subtype":"init","model":"m"}"""))
+        assertEquals(listOf("compact", "review"), r.snapshot().commands)
+    }
 }

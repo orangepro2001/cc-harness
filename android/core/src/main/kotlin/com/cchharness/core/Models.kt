@@ -38,6 +38,7 @@ data class SessionInfo(
     val title: String = "",
     val cwd: String = "",
     val model: String = "",
+    val effort: String = "",
     val permissionMode: String = "manual",
     val started: Boolean = false,
     val turns: Int = 0,
@@ -57,9 +58,38 @@ data class CreateSession(
     val title: String = "",
     val cwd: String = "",
     val model: String = "",
+    val effort: String = "",
     val permissionMode: String = "manual",
     val appendSystemPrompt: String = "",
 )
+
+/** A file uploaded to a session; [kind] is "image" (shown to the model inline) or "file". */
+@Serializable
+data class Attachment(
+    val id: String,
+    val name: String,
+    val kind: String = "file",
+    val mime: String = "",
+    val size: Long = 0,
+) {
+    val isImage: Boolean get() = kind == "image"
+}
+
+/** The newest published build of this app, as announced by the server. */
+@Serializable
+data class Release(
+    val versionCode: Int,
+    val versionName: String = "",
+    val sha256: String,
+    val size: Long = 0,
+    val notes: String = "",
+    val publishedAt: String = "",
+) {
+    fun isNewerThan(installedVersionCode: Int): Boolean = versionCode > installedVersionCode
+}
+
+@Serializable
+data class CommandList(val commands: List<String> = emptyList())
 
 @Serializable
 data class DirEntry(val name: String, val path: String)
@@ -94,3 +124,44 @@ val MODELS: List<Pair<String, String>> = listOf(
     "haiku" to "haiku",
     "fable" to "fable",
 )
+
+val EFFORTS: List<Pair<String, String>> = listOf(
+    "" to "默认",
+    "low" to "低",
+    "medium" to "中",
+    "high" to "高",
+    "xhigh" to "超高",
+    "max" to "最高",
+)
+
+/** Largest file the server accepts by default (HARNESS_MAX_UPLOAD_MB); the server has the final say. */
+const val DEFAULT_MAX_UPLOAD_BYTES: Long = 25L * 1024 * 1024
+const val MAX_ATTACHMENTS: Int = 10
+
+/** A conversation kept by the local Claude Code (terminal / VS Code) that can be taken over. */
+@Serializable
+data class LocalSession(
+    val id: String,
+    val title: String = "",
+    val cwd: String = "",
+    val updatedAt: String = "",
+    val size: Long = 0,
+    /** Modified moments ago: probably still open in another Claude Code. */
+    val active: Boolean = false,
+)
+
+@Serializable
+data class LocalSessionList(val sessions: List<LocalSession> = emptyList())
+
+/** One bar of the plan-usage panel (5-hour session, weekly, per-model weekly). */
+@Serializable
+data class UsageLimit(
+    val kind: String,
+    val label: String,
+    val percent: Double = 0.0,
+    val severity: String = "",
+    val resetsAt: String? = null,
+)
+
+@Serializable
+data class Usage(val plan: String = "", val limits: List<UsageLimit> = emptyList())

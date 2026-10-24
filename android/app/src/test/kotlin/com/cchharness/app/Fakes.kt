@@ -1,10 +1,15 @@
 package com.cchharness.app
 
+import com.cchharness.core.Attachment
 import com.cchharness.core.CreateSession
+import com.cchharness.core.Release
+import com.cchharness.core.UploadSource
 import com.cchharness.core.DirListing
 import com.cchharness.core.HarnessApi
 import com.cchharness.core.LoginResponse
+import com.cchharness.core.LocalSession
 import com.cchharness.core.Me
+import com.cchharness.core.Usage
 import com.cchharness.core.SessionInfo
 import com.cchharness.core.StreamEvent
 import kotlinx.coroutines.flow.Flow
@@ -26,6 +31,11 @@ class FakeApi : HarnessApi {
     var onList: () -> List<SessionInfo> = { sessions.toList() }
     var onCreate: (CreateSession) -> SessionInfo = { SessionInfo(id = "new-id", title = it.title, cwd = it.cwd.ifEmpty { "/work" }) }
     var onSend: (String, String) -> Unit = { _, _ -> }
+    var onUpload: suspend (UploadSource) -> Attachment = { Attachment("att-${it.name}", it.name, if (it.mime.startsWith("image/")) "image" else "file", it.mime, it.size) }
+    var onRelease: () -> Release? = { null }
+    var onDownload: suspend (Release, java.io.File, (Long, Long) -> Unit) -> Unit = { _, f, p -> f.writeText("apk"); p(3, 3) }
+    var commandList: List<String> = listOf("compact", "context")
+    var attachmentBytes: ByteArray = ByteArray(0)
     var onDirs: (String?, Boolean) -> DirListing = { _, _ -> DirListing() }
 
     val sessions = mutableListOf<SessionInfo>()
@@ -53,8 +63,8 @@ class FakeApi : HarnessApi {
 
     override suspend fun getSession(id: String): SessionInfo = sessions.first { it.id == id }
 
-    override suspend fun updateSession(id: String, title: String?, permissionMode: String?, model: String?): SessionInfo {
-        calls += "update:$id:$title:$permissionMode:$model"
+    override suspend fun updateSession(id: String, title: String?, permissionMode: String?, model: String?, effort: String?): SessionInfo {
+        calls += "update:$id:$title:$permissionMode:$model" + (effort?.let { ":effort=$it" } ?: "")
         return sessions.first { it.id == id }
     }
 
@@ -63,9 +73,60 @@ class FakeApi : HarnessApi {
         sessions.removeAll { it.id == id }
     }
 
-    override suspend fun sendMessage(id: String, text: String) {
-        calls += "send:$id:$text"
+    override suspend fun upload(sessionId: String, file: UploadSource): Attachment {
+        calls += "upload:$sessionId:${file.name}"
+        return onUpload(file)
+    }
+
+    override suspend fun downloadAttachment(sessionId: String, attachmentId: String): ByteArray {
+        calls += "download-att:$attachmentId"
+        return attachmentBytes
+    }
+
+    override suspend fun commands(sessionId: String): List<String> {
+        calls += "commands:$sessionId"
+        return commandList
+    }
+
+    override suspend fun latestRelease(): Release? {
+        calls += "latest-release"
+        return onRelease()
+    }
+
+    override suspend fun downloadRelease(release: Release, dest: java.io.File, onProgress: (Long, Long) -> Unit) {
+        calls += "download-release:${release.versionCode}"
+        onDownload(release, dest, onProgress)
+    }
+
+    override suspend fun sendMessage(id: String, text: String, attachments: List<String>) {
+        calls += "send:$id:$text" + if (attachments.isEmpty()) "" else ":att=${attachments.joinToString(",")}"
         onSend(id, text)
+    }
+
+    var localSessions: List<LocalSession> = emptyList()
+    var onImportLocal: (String, Boolean) -> SessionInfo = { id, _ ->
+        val l = localSessions.first { it.id == id }
+        SessionInfo(id = l.id, title = l.title, cwd = l.cwd, started = true)
+    }
+    var onUsage: () -> Usage = { Usage() }
+
+    override suspend fun listLocalSessions(): List<LocalSession> {
+        calls += "local-list"
+        return localSessions
+    }
+
+    override suspend fun importLocalSession(id: String, force: Boolean): SessionInfo {
+        calls += "import:$id:$force"
+        return onImportLocal(id, force).also { sessions += it }
+    }
+
+    override suspend fun syncSession(id: String) {
+        calls += "sync:$id"
+    }
+
+    override suspend fun usage(): Usage {
+        calls += "usage"
+        return onUsage()
     }
 
     override suspend fun interrupt(id: String) {

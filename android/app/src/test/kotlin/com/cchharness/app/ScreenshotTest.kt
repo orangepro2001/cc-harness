@@ -148,4 +148,68 @@ class ScreenshotTest {
         rule.setContent { HarnessTheme { DirectoryPickerDialog("", { p, _ -> tree[p] ?: DirListing(p.orEmpty()) }, { p, n -> "$p/$n" }, {}, {}) } }
         save(null, "06-picker-roots")
     }
+
+    @Test
+    fun chatWithAttachmentsAndSlashCommands() {
+        val r = ChatReducer()
+        r.apply(ev(1, """{"type":"system","subtype":"init","model":"claude-sonnet","slash_commands":["compact","context","review","code-review","security-review","simplify"]}"""))
+        r.apply(
+            ev(
+                2,
+                """{"type":"harness","kind":"user_message","text":"帮我看看这张截图和日志","attachments":[
+                    {"id":"i1","name":"crash.png","kind":"image","mime":"image/png","size":1},
+                    {"id":"f1","name":"server.log","kind":"file","mime":"text/plain","size":183500}]}""",
+            ),
+        )
+        val state = r.snapshot().copy(status = "idle")
+        val bmp = Bitmap.createBitmap(320, 180, Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF4A78C2.toInt()) }
+        val png = java.io.ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+        rule.setContent {
+            HarnessTheme {
+                ChatScreen(
+                    "日志排查", "/home/tony/dev/cc-harness", state, Connection.Live, "manual", false, null,
+                    {}, {}, {}, {}, {}, { _, _ -> }, {}, { _, _ -> }, {},
+                    drafts = listOf(
+                        DraftAttachment(1, "trace.txt", 20480, false, UploadState.Done(com.cchharness.core.Attachment("t", "trace.txt"))),
+                        DraftAttachment(2, "screen.jpg", 2_400_000, true, UploadState.Uploading),
+                    ),
+                    loadAttachment = { png },
+                )
+            }
+        }
+        rule.waitUntil(5_000) { rule.onAllNodes(androidx.compose.ui.test.hasTestTag("att-image-i1")).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag("chat-input").performTextInput("/re")
+        save(null, "07-chat-attachments-slash")
+    }
+
+    @Test
+    fun chatSettingsDialog() {
+        rule.setContent {
+            HarnessTheme {
+                ChatScreen(
+                    "整理 README", "/work", conversation(), Connection.Live, "manual", false, null,
+                    {}, {}, {}, {}, {}, { _, _ -> }, {}, { _, _ -> }, {},
+                    fallbackModel = "sonnet", fallbackEffort = "high",
+                )
+            }
+        }
+        rule.onNodeWithTag("chat-menu").performClick()
+        rule.onNodeWithTag("menu-settings").performClick()
+        save(null, "08-chat-settings")
+    }
+
+    @Test
+    fun updateOffer() {
+        val rel = com.cchharness.core.Release(7, "1.4.0", "a".repeat(64), 10_485_760, "修复若干问题\n新增图片和文件上传\n支持斜杠命令")
+        rule.setContent {
+            HarnessTheme {
+                SessionListScreen(
+                    "tony", sessions, null, {}, {}, {}, {}, {}, {},
+                    versionName = "1.1.0", update = UpdateState.Available(rel),
+                )
+                com.cchharness.app.ui.UpdateDialog(UpdateState.Downloading(rel, 4_194_304, 10_485_760), "1.1.0", {}, {}, {})
+            }
+        }
+        save(null, "09-update-dialog")
+    }
 }

@@ -34,10 +34,12 @@ type SessionMeta struct {
 	Title          string    `json:"title"`
 	Cwd            string    `json:"cwd"`
 	Model          string    `json:"model,omitempty"`
+	Effort         string    `json:"effort,omitempty"` // low|medium|high|xhigh|max; empty = CLI default
 	PermissionMode string    `json:"permissionMode"`
 	AppendPrompt   string    `json:"appendSystemPrompt,omitempty"`
 	Started        bool      `json:"started"` // claude has a transcript to --resume
 	Turns          int       `json:"turns"`
+	SyncedSize     int64     `json:"syncedSize,omitempty"` // transcript bytes already reflected in the event log
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
 }

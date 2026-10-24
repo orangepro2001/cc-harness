@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -23,6 +24,11 @@ import okhttp3.Callback
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody
+import okio.BufferedSink
+import okio.source
+import kotlinx.serialization.json.JsonArray
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -31,6 +37,9 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+/** A downloaded file did not match its published checksum. */
+class ChecksumException(message: String) : IOException(message)
 
 open class ApiException(val code: Int, message: String) : IOException(message)
 
@@ -51,9 +60,15 @@ interface HarnessApi {
     suspend fun listSessions(): List<SessionInfo>
     suspend fun createSession(req: CreateSession): SessionInfo
     suspend fun getSession(id: String): SessionInfo
-    suspend fun updateSession(id: String, title: String? = null, permissionMode: String? = null, model: String? = null): SessionInfo
+    suspend fun updateSession(
+        id: String,
+        title: String? = null,
+        permissionMode: String? = null,
+        model: String? = null,
+        effort: String? = null,
+    ): SessionInfo
     suspend fun deleteSession(id: String)
-    suspend fun sendMessage(id: String, text: String)
+    suspend fun sendMessage(id: String, text: String, attachments: List<String> = emptyList())
     suspend fun interrupt(id: String)
     suspend fun stop(id: String)
     suspend fun resolvePermission(
@@ -65,6 +80,36 @@ interface HarnessApi {
         updatedInput: JsonElement? = null,
     )
 
+    /** Uploads one file to the session; the returned id goes into [sendMessage]'s attachments. */
+    suspend fun upload(sessionId: String, file: UploadSource): Attachment
+
+    /** Raw bytes of an uploaded attachment (used for image thumbnails). */
+    suspend fun downloadAttachment(sessionId: String, attachmentId: String): ByteArray
+
+    /** The newest published Android build, or null when the server has none. */
+    suspend fun latestRelease(): Release?
+
+    /**
+     * Downloads the published APK to [dest], verifying its SHA-256 against [release]; a
+     * corrupt or tampered download is deleted and reported as [ChecksumException].
+     */
+    suspend fun downloadRelease(release: Release, dest: java.io.File, onProgress: (done: Long, total: Long) -> Unit = { _, _ -> })
+
+    /** Slash commands (without "/") offered for the session. */
+    suspend fun commands(sessionId: String): List<String>
+
+    /** Conversations of the local Claude Code that are not managed by the server yet. */
+    suspend fun listLocalSessions(): List<LocalSession>
+
+    /** Takes over a local conversation; 409 means it is managed already or looks in use elsewhere (retry with [force]). */
+    suspend fun importLocalSession(id: String, force: Boolean = false): SessionInfo
+
+    /** Pulls in what was added to the session outside the server (terminal / VS Code). */
+    suspend fun syncSession(id: String)
+
+    /** Plan usage of the account the server is logged in with. */
+    suspend fun usage(): Usage
+
     /** Lists sub-directories of [path]; a null path lists the allowed roots. */
     suspend fun listDirs(path: String?, hidden: Boolean = false): DirListing
     suspend fun makeDir(parent: String, name: String): String
@@ -72,6 +117,9 @@ interface HarnessApi {
     /** Event stream that survives disconnects by resuming from the last seen sequence. */
     fun events(sessionId: String, after: Long = 0): Flow<StreamEvent>
 }
+
+/** A file to upload, read lazily so large files are streamed rather than held in memory. */
+class UploadSource(val name: String, val mime: String, val size: Long, val open: () -> java.io.InputStream)
 
 class HarnessClient(
     baseUrl: String,
@@ -83,6 +131,11 @@ class HarnessClient(
     private val rest = http.newBuilder().callTimeout(30, TimeUnit.SECONDS).build()
 
     // The server sends a heartbeat every 15s, so 45s of silence means a dead link.
+    // Uploads can take a while on a slow link; no overall deadline, but the connection must make progress.
+    private val upload = http.newBuilder().callTimeout(0, TimeUnit.SECONDS).writeTimeout(60, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()
+
+    private val download = http.newBuilder().callTimeout(0, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()
+
     private val sse = http.newBuilder().callTimeout(0, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).build()
 
     @Volatile
@@ -124,11 +177,18 @@ class HarnessClient(
     override suspend fun getSession(id: String): SessionInfo =
         HarnessJson.decodeFromString(SessionInfo.serializer(), send("GET", listOf("api", "sessions", id)))
 
-    override suspend fun updateSession(id: String, title: String?, permissionMode: String?, model: String?): SessionInfo {
+    override suspend fun updateSession(
+        id: String,
+        title: String?,
+        permissionMode: String?,
+        model: String?,
+        effort: String?,
+    ): SessionInfo {
         val body = buildJsonObject {
             title?.let { put("title", it) }
             permissionMode?.let { put("permissionMode", it) }
             model?.let { put("model", it) }
+            effort?.let { put("effort", it) }
         }
         return HarnessJson.decodeFromString(SessionInfo.serializer(), send("PATCH", listOf("api", "sessions", id), body))
     }
@@ -137,9 +197,100 @@ class HarnessClient(
         send("DELETE", listOf("api", "sessions", id))
     }
 
-    override suspend fun sendMessage(id: String, text: String) {
-        send("POST", listOf("api", "sessions", id, "messages"), buildJsonObject { put("text", text) })
+    override suspend fun sendMessage(id: String, text: String, attachments: List<String>) {
+        val body = buildJsonObject {
+            put("text", text)
+            if (attachments.isNotEmpty()) put("attachments", JsonArray(attachments.map { JsonPrimitive(it) }))
+        }
+        send("POST", listOf("api", "sessions", id, "messages"), body)
     }
+
+    override suspend fun upload(sessionId: String, file: UploadSource): Attachment {
+        val body = object : RequestBody() {
+            override fun contentType() = file.mime.ifEmpty { "application/octet-stream" }.toMediaTypeOrNull()
+            override fun contentLength() = file.size
+            override fun writeTo(sink: BufferedSink) {
+                file.open().use { sink.writeAll(it.source()) }
+            }
+        }
+        val req = Request.Builder()
+            .url(url(listOf("api", "sessions", sessionId, "uploads"), listOf("name" to file.name)))
+            .apply { token?.let { header("Authorization", "Bearer $it") } }
+            .post(body)
+            .build()
+        return HarnessJson.decodeFromString(Attachment.serializer(), exec(req, upload))
+    }
+
+    override suspend fun downloadAttachment(sessionId: String, attachmentId: String): ByteArray {
+        val req = getRequest(listOf("api", "sessions", sessionId, "uploads", attachmentId)).build()
+        return execBytes(req, rest)
+    }
+
+    override suspend fun latestRelease(): Release? = try {
+        HarnessJson.decodeFromString(Release.serializer(), send("GET", listOf("api", "client", "android", "latest")))
+    } catch (e: ApiException) {
+        if (e.code == 404) null else throw e
+    }
+
+    override suspend fun downloadRelease(release: Release, dest: java.io.File, onProgress: (Long, Long) -> Unit) {
+        withContext(Dispatchers.IO) {
+            val part = java.io.File(dest.path + ".part")
+            part.parentFile?.mkdirs()
+            val call = download.newCall(getRequest(listOf("api", "client", "android", "download")).build())
+            val reg = currentCoroutineContext()[Job]?.invokeOnCompletion { call.cancel() }
+            try {
+                call.execute().use { resp ->
+                    if (!resp.isSuccessful) throw errorFor(resp, resp.body?.string().orEmpty())
+                    val body = resp.body ?: throw IOException("empty download")
+                    val total = body.contentLength().takeIf { it > 0 } ?: release.size
+                    val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    var done = 0L
+                    body.byteStream().use { input ->
+                        part.outputStream().use { out ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                ensureActive()
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                digest.update(buf, 0, n)
+                                done += n
+                                onProgress(done, total)
+                            }
+                        }
+                    }
+                    val actual = digest.digest().joinToString("") { "%02x".format(it) }
+                    if (!actual.equals(release.sha256, ignoreCase = true)) {
+                        throw ChecksumException("下载文件校验失败，请重试")
+                    }
+                }
+                if (!part.renameTo(dest)) throw IOException("cannot move download into place")
+            } catch (e: Throwable) {
+                part.delete()
+                throw e
+            } finally {
+                reg?.dispose()
+            }
+        }
+    }
+
+    override suspend fun commands(sessionId: String): List<String> =
+        HarnessJson.decodeFromString(CommandList.serializer(), send("GET", listOf("api", "sessions", sessionId, "commands"))).commands
+
+    override suspend fun listLocalSessions(): List<LocalSession> =
+        HarnessJson.decodeFromString(LocalSessionList.serializer(), send("GET", listOf("api", "local-sessions"))).sessions
+
+    override suspend fun importLocalSession(id: String, force: Boolean): SessionInfo = HarnessJson.decodeFromString(
+        SessionInfo.serializer(),
+        send("POST", listOf("api", "local-sessions", id, "import"), JsonObject(if (force) mapOf("force" to JsonPrimitive(true)) else emptyMap())),
+    )
+
+    override suspend fun syncSession(id: String) {
+        send("POST", listOf("api", "sessions", id, "sync"), JsonObject(emptyMap()))
+    }
+
+    override suspend fun usage(): Usage =
+        HarnessJson.decodeFromString(Usage.serializer(), send("GET", listOf("api", "usage")))
 
     override suspend fun interrupt(id: String) {
         send("POST", listOf("api", "sessions", id, "interrupt"), JsonObject(emptyMap()))
@@ -258,8 +409,11 @@ class HarnessClient(
         return exec(builder.build())
     }
 
-    private suspend fun exec(req: Request): String = suspendCancellableCoroutine { cont ->
-        val call = rest.newCall(req)
+    private suspend fun exec(req: Request, client: OkHttpClient = rest): String =
+        String(execBytes(req, client), Charsets.UTF_8)
+
+    private suspend fun execBytes(req: Request, client: OkHttpClient): ByteArray = suspendCancellableCoroutine { cont ->
+        val call = client.newCall(req)
         cont.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
@@ -269,8 +423,8 @@ class HarnessClient(
             override fun onResponse(call: Call, response: Response) {
                 response.use { r ->
                     try {
-                        val text = r.body?.string().orEmpty()
-                        if (r.isSuccessful) cont.resume(text) else cont.resumeWithException(errorFor(r, text))
+                        val bytes = r.body?.bytes() ?: ByteArray(0)
+                        if (r.isSuccessful) cont.resume(bytes) else cont.resumeWithException(errorFor(r, String(bytes, Charsets.UTF_8)))
                     } catch (e: IOException) {
                         if (cont.isActive) cont.resumeWithException(e)
                     }

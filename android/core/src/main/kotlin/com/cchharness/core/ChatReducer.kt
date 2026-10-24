@@ -17,7 +17,11 @@ sealed interface ChatItem {
     val key: String
 }
 
-data class UserMessage(override val key: String, val text: String) : ChatItem
+data class UserMessage(
+    override val key: String,
+    val text: String,
+    val attachments: List<Attachment> = emptyList(),
+) : ChatItem
 
 data class AssistantText(override val key: String, val text: String) : ChatItem
 
@@ -66,6 +70,9 @@ data class ChatState(
     val status: String = "stopped",
     val permissionMode: String? = null,
     val model: String? = null,
+    val effort: String? = null,
+    /** Slash commands the CLI reported when it started (without the leading "/"). */
+    val commands: List<String> = emptyList(),
     val lastSeq: Long = 0,
 ) {
     val pendingPermissions: List<PermissionItem>
@@ -85,6 +92,8 @@ class ChatReducer {
     private var status = "stopped"
     private var permissionMode: String? = null
     private var model: String? = null
+    private var effort: String? = null
+    private var commands: List<String> = emptyList()
     private var lastSeq = 0L
     private var counter = 0
 
@@ -101,6 +110,10 @@ class ChatReducer {
             "harness" -> onHarness(d)
             "system" -> if (d.str("subtype") == "init") {
                 model = d.str("model") ?: model
+                (d["slash_commands"] as? JsonArray)?.let { arr ->
+                    val list = arr.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                    if (list.isNotEmpty()) commands = list
+                }
                 items += Note(key(), "已连接 · ${d.str("model").orEmpty()} · ${d.str("permissionMode").orEmpty()}")
             }
             "assistant" -> onAssistant(d)
@@ -118,19 +131,24 @@ class ChatReducer {
         status = status,
         permissionMode = permissionMode,
         model = model,
+        effort = effort,
+        commands = commands,
         lastSeq = lastSeq,
     )
 
     private fun onHarness(d: JsonObject) {
         when (d.str("kind")) {
-            "user_message" -> items += UserMessage(key(), d.str("text").orEmpty())
+            "user_message" -> items += UserMessage(key(), d.str("text").orEmpty(), parseAttachments(d["attachments"]))
             "status" -> status = d.str("status") ?: status
+            "imported" -> items += Note(key(), "已接管本机会话 · ${d.str("messages").orEmpty()} 条历史")
+            "synced" -> items += Note(key(), "终端/VS Code 中继续过本会话 · 已同步 ${d.str("messages").orEmpty()} 条新内容")
             "process_started" ->
                 items += Note(key(), if (d["resume"]?.let { it is JsonPrimitive && it.booleanOrNull == true } == true) "后台进程已启动 (恢复上下文)" else "后台进程已启动")
             "process_exit" -> items += Note(key(), "后台进程已退出: ${d.str("reason").orEmpty()}")
             "error" -> items += Note(key(), d.str("message").orEmpty(), isError = true)
             "mode_changed" -> permissionMode = d.str("permissionMode") ?: permissionMode
             "model_changed" -> model = d.str("model") ?: model
+            "effort_changed" -> effort = d.str("effort").orEmpty()
             "permission_resolved" -> {
                 val idx = permIndex[d.str("requestId")] ?: return
                 val p = items[idx] as? PermissionItem ?: return
@@ -272,3 +290,12 @@ fun buildAnswerInput(original: JsonObject, answers: Map<String, String>): JsonOb
 }
 
 private fun JsonArray?.orEmpty(): JsonArray = this ?: JsonArray(emptyList())
+
+private fun parseAttachments(el: JsonElement?): List<Attachment> =
+    ((el as? JsonArray) ?: JsonArray(emptyList())).mapNotNull {
+        try {
+            HarnessJson.decodeFromJsonElement(Attachment.serializer(), it)
+        } catch (e: Exception) {
+            null
+        }
+    }

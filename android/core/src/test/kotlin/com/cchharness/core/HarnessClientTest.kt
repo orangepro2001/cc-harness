@@ -181,4 +181,110 @@ class HarnessClientTest {
         // first() cancels the flow; this must return promptly instead of hanging on the open socket
         assertTrue(server.requestCount >= 1)
     }
+
+    @Test
+    fun sendMessageCarriesAttachmentIds() = runBlocking {
+        server.enqueue(json("""{"ok":true}""", 202))
+        client.sendMessage("s1", "hi", listOf("aa", "bb"))
+        val body = HarnessJson.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertEquals("hi", body["text"]!!.jsonPrimitive.content)
+        assertEquals(listOf("aa", "bb"), (body["attachments"] as kotlinx.serialization.json.JsonArray).map { it.jsonPrimitive.content })
+
+        server.enqueue(json("""{"ok":true}""", 202))
+        client.sendMessage("s1", "plain")
+        assertTrue("attachments" !in HarnessJson.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject)
+    }
+
+    @Test
+    fun uploadStreamsTheRawBodyWithNameAndType() = runBlocking {
+        client.token = "t"
+        server.enqueue(json("""{"id":"0123456789abcdef","name":"a b.png","kind":"image","mime":"image/png","size":3}""", 201))
+        val att = client.upload("s1", UploadSource("a b.png", "image/png", 3) { byteArrayOf(1, 2, 3).inputStream() })
+        assertEquals("0123456789abcdef", att.id)
+        assertTrue(att.isImage)
+        val req = server.takeRequest()
+        assertEquals("/api/sessions/s1/uploads?name=a%20b.png", req.path)
+        assertEquals("image/png", req.getHeader("Content-Type"))
+        assertEquals("Bearer t", req.getHeader("Authorization"))
+        assertEquals(listOf<Byte>(1, 2, 3), req.body.readByteArray().toList())
+    }
+
+    @Test
+    fun uploadErrorsSurfaceTheServerMessage() = runBlocking {
+        server.enqueue(json("""{"error":"file exceeds the 25 MB limit"}""", 413))
+        val e = assertFailsWith<ApiException> { client.upload("s1", UploadSource("x", "", 1) { byteArrayOf(1).inputStream() }) }
+        assertEquals(413, e.code)
+        assertEquals("file exceeds the 25 MB limit", e.message)
+    }
+
+    @Test
+    fun effortAndCommandsRequests() = runBlocking {
+        server.enqueue(json("""{"id":"s1","effort":"max"}"""))
+        assertEquals("max", client.updateSession("s1", effort = "max").effort)
+        assertEquals("""{"effort":"max"}""", server.takeRequest().body.readUtf8())
+
+        server.enqueue(json("""{"commands":["compact","context"]}"""))
+        assertEquals(listOf("compact", "context"), client.commands("s1"))
+        assertEquals("/api/sessions/s1/commands", server.takeRequest().path)
+    }
+
+    @Test
+    fun latestReleaseIsNullWhenNothingPublished() = runBlocking {
+        server.enqueue(json("""{"error":"no release published"}""", 404))
+        assertNull(client.latestRelease())
+        server.enqueue(json("""{"versionCode":3,"versionName":"1.2","sha256":"${"a".repeat(64)}","size":10,"notes":"n"}"""))
+        assertEquals(3, client.latestRelease()!!.versionCode)
+        server.enqueue(json("""{"error":"x"}""", 500))
+        assertEquals(500, assertFailsWith<ApiException> { client.latestRelease() }.code)
+    }
+
+    @Test
+    fun usageDecodesTheLimitBars() = runBlocking {
+        server.enqueue(json("""{"plan":"max","limits":[{"kind":"session","label":"当前会话（5 小时）","percent":12,"resetsAt":"2026-10-24T05:30:00Z"},{"kind":"weekly_scoped","label":"Fable 额度","percent":0}],"fetchedAt":"2026-10-24T00:00:00Z"}"""))
+        val u = client.usage()
+        assertEquals("/api/usage", server.takeRequest().path)
+        assertEquals("max", u.plan)
+        assertEquals(listOf(12.0, 0.0), u.limits.map { it.percent })
+        assertEquals("2026-10-24T05:30:00Z", u.limits[0].resetsAt)
+        assertNull(u.limits[1].resetsAt)
+    }
+
+    @Test
+    fun usageUnavailableSurfacesTheServerMessage() = runBlocking {
+        server.enqueue(json("""{"error":"claude login on the server has expired"}""", 503))
+        val e = assertFailsWith<ApiException> { client.usage() }
+        assertEquals(503, e.code)
+        assertTrue(e.message!!.contains("expired"))
+    }
+
+    @Test
+    fun localSessionsAreListedAndImportedWithOptionalForce() = runBlocking {
+        server.enqueue(json("""{"sessions":[{"id":"u1","title":"t","cwd":"/w","updatedAt":"2026-10-24T00:00:00Z","size":10,"active":true}]}"""))
+        val l = client.listLocalSessions().single()
+        assertEquals("/api/local-sessions", server.takeRequest().path)
+        assertTrue(l.active)
+
+        server.enqueue(json("""{"id":"u1","title":"t","cwd":"/w","started":true,"status":"stopped"}""", 201))
+        assertEquals("u1", client.importLocalSession("u1").id)
+        val plain = server.takeRequest()
+        assertEquals("/api/local-sessions/u1/import", plain.path)
+        assertEquals("POST", plain.method)
+        assertNull(HarnessJson.parseToJsonElement(plain.body.readUtf8()).jsonObject["force"])
+
+        server.enqueue(json("""{"id":"u1","started":true}""", 201))
+        client.importLocalSession("u1", force = true)
+        assertEquals("true", HarnessJson.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject["force"]!!.jsonPrimitive.content)
+
+        server.enqueue(json("""{"error":"session was modified moments ago"}""", 409))
+        assertEquals(409, assertFailsWith<ApiException> { client.importLocalSession("u1") }.code)
+    }
+
+    @Test
+    fun syncPostsToTheSessionSyncEndpoint() = runBlocking {
+        server.enqueue(json("""{"synced":2,"session":{"id":"s1"}}"""))
+        client.syncSession("s1")
+        val r = server.takeRequest()
+        assertEquals("POST", r.method)
+        assertEquals("/api/sessions/s1/sync", r.path)
+    }
 }

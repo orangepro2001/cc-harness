@@ -1,6 +1,9 @@
 package com.cchharness.app.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import com.cchharness.app.UpdateState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +33,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cchharness.core.SessionInfo
+import com.cchharness.core.Usage
 
 fun statusLabel(status: String): String = when (status) {
     "idle" -> "空闲"
@@ -51,6 +55,13 @@ fun SessionListScreen(
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
     onDismissNotice: () -> Unit,
+    versionName: String = "",
+    update: UpdateState = UpdateState.Idle,
+    onCheckUpdate: () -> Unit = {},
+    onShowUpdate: () -> Unit = {},
+    usage: Usage? = null,
+    usageError: String? = null,
+    onImport: () -> Unit = {},
 ) {
     var confirmDelete by remember { mutableStateOf<SessionInfo?>(null) }
 
@@ -76,6 +87,28 @@ fun SessionListScreen(
                     modifier = Modifier.fillMaxWidth().clickable(onClick = onDismissNotice).padding(12.dp).testTag("notice"),
                 )
             }
+            val offered = update is UpdateState.Available || update is UpdateState.Downloading ||
+                update is UpdateState.Ready || update is UpdateState.NeedsPermission
+            if (offered) {
+                Text(
+                    "有新版本可更新,点这里查看",
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primaryContainer)
+                        .clickable(onClick = onShowUpdate).padding(12.dp).testTag("update-banner"),
+                )
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (versionName.isNotBlank()) "版本 $versionName" else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.weight(1f).testTag("app-version"),
+                )
+                TextButton(onClick = onImport, modifier = Modifier.testTag("import-local")) { Text("接管本机会话") }
+                TextButton(onClick = onCheckUpdate, enabled = update !is UpdateState.Checking, modifier = Modifier.testTag("check-update")) {
+                    Text(if (update is UpdateState.Checking) "检查中…" else "检查更新")
+                }
+            }
+            UsagePanel(usage, usageError)
             if (sessions.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("还没有会话,点右下角新建", style = MaterialTheme.typography.bodyMedium)

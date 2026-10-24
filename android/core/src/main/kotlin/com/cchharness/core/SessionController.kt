@@ -41,6 +41,17 @@ class SessionController(
         if (jobs.isNotEmpty()) return
         val collector = scope.launch {
             try {
+                // Fold in anything added from a terminal / VS Code before replaying the history.
+                // A failed sync must not keep the chat closed.
+                try {
+                    api.syncSession(sessionId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: AuthException) {
+                    throw e
+                } catch (e: Exception) {
+                    // the history we have is still correct
+                }
                 api.events(sessionId).collect { ev ->
                     reducer.apply(ev)
                     dirty.set(true)
@@ -74,7 +85,20 @@ class SessionController(
         if (dirty.getAndSet(false)) _state.value = reducer.snapshot()
     }
 
-    suspend fun send(text: String) = api.sendMessage(sessionId, text)
+    suspend fun send(text: String, attachments: List<String> = emptyList()) =
+        api.sendMessage(sessionId, text, attachments)
+
+    suspend fun upload(file: UploadSource): Attachment = api.upload(sessionId, file)
+
+    suspend fun commands(): List<String> = api.commands(sessionId)
+
+    suspend fun setEffort(level: String) {
+        api.updateSession(sessionId, effort = level)
+    }
+
+    suspend fun setModel(model: String) {
+        api.updateSession(sessionId, model = model)
+    }
 
     suspend fun interrupt() = api.interrupt(sessionId)
 

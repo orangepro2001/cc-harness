@@ -95,6 +95,23 @@ type Session struct {
 
 	logMu sync.Mutex
 	log   *EventLog
+
+	commands []string // slash commands reported by the CLI's init message (guarded by mu)
+}
+
+// Commands lists the slash commands available in this session, falling back to
+// the last list any session reported (the CLI only reveals it once started).
+func (s *Session) Commands() []string {
+	s.mu.Lock()
+	c := s.commands
+	s.mu.Unlock()
+	if len(c) == 0 {
+		c = s.m.knownCommands()
+	}
+	if c == nil {
+		c = []string{}
+	}
+	return c
 }
 
 func newSession(m *Manager, meta SessionMeta) *Session {
@@ -260,9 +277,13 @@ func (s *Session) buildArgs() []string {
 		"--verbose", "--include-partial-messages",
 		"--permission-prompt-tool", "stdio",
 		"--permission-mode", s.meta.PermissionMode,
+		"--add-dir", s.uploadsDir(), // lets the agent read attachments by path
 	}
 	if s.meta.Model != "" {
 		args = append(args, "--model", s.meta.Model)
+	}
+	if s.meta.Effort != "" {
+		args = append(args, "--effort", s.meta.Effort)
 	}
 	if s.meta.AppendPrompt != "" {
 		args = append(args, "--append-system-prompt", s.meta.AppendPrompt)
@@ -275,11 +296,79 @@ func (s *Session) buildArgs() []string {
 	return args
 }
 
+// transcriptPath is where the claude CLI keeps this session's conversation
+// ("" if it has none yet). The CLI, the VS Code extension and this server all
+// read and append to the same file, which is what makes a session portable.
+func (s *Session) transcriptPath() string {
+	files, _ := filepath.Glob(filepath.Join(s.m.cfg.claudeHome(), "projects", "*", s.meta.ID+".jsonl"))
+	if len(files) == 0 {
+		return ""
+	}
+	return files[0]
+}
+
+// syncLocked pulls conversation that was appended to the transcript behind
+// our back (the session was continued in a terminal or the VS Code extension)
+// into the event log, and returns how many events it added. Nothing is done
+// while our own claude process is running: it is the writer then.
+func (s *Session) syncLocked() int {
+	if s.proc != nil || !s.meta.Started {
+		return 0
+	}
+	path := s.transcriptPath()
+	if path == "" {
+		return 0
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	if s.meta.SyncedSize == 0 || st.Size() < s.meta.SyncedSize {
+		// Sessions from before sync existed (or a rewritten transcript): trust the log as it is.
+		s.meta.SyncedSize = st.Size()
+		s.saveMetaLocked()
+		return 0
+	}
+	if st.Size() == s.meta.SyncedSize {
+		return 0
+	}
+	events, prompts, end, err := convertTranscript(path, s.meta.SyncedSize)
+	if err != nil {
+		log.Printf("session %s: sync transcript: %v", s.meta.ID, err)
+		return 0
+	}
+	if len(events) > 0 {
+		s.emitLocked(harnessEvent("synced", map[string]any{"messages": len(events), "source": "local"}), true)
+		for _, e := range events {
+			s.emitLocked(e, true)
+		}
+		s.meta.Turns += prompts
+	}
+	s.meta.SyncedSize = end
+	s.saveMetaLocked()
+	return len(events)
+}
+
+// Sync is syncLocked for callers that do not hold the lock.
+func (s *Session) Sync() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.syncLocked()
+	if n > 0 {
+		s.statusChangedLocked()
+	}
+	return n
+}
+
 func (s *Session) startLocked() error {
 	if s.proc != nil {
 		return nil
 	}
+	s.syncLocked()
 	resume := s.meta.Started
+	if err := os.MkdirAll(s.uploadsDir(), 0o700); err != nil {
+		return err
+	}
 	cmd := exec.Command(s.m.cfg.ClaudeBin, s.buildArgs()...)
 	cmd.Dir = s.meta.Cwd
 	cmd.Env = cleanEnv()
@@ -359,6 +448,13 @@ func (s *Session) waitLoop(p *proc) {
 		s.inflight = 0
 	}
 	s.emitLocked(harnessEvent("process_exit", map[string]any{"code": code, "reason": reason}), true)
+	// Everything now in the transcript was written by this process and is
+	// already in the event log; only later growth is foreign.
+	if path := s.transcriptPath(); path != "" {
+		if st, err := os.Stat(path); err == nil {
+			s.meta.SyncedSize = st.Size()
+		}
+	}
 	s.saveMetaLocked()
 	s.statusChangedLocked()
 }
@@ -370,10 +466,11 @@ func (s *Session) handleLine(p *proc, line []byte) {
 		return
 	}
 	var h struct {
-		Type      string  `json:"type"`
-		Subtype   string  `json:"subtype"`
-		RequestID string  `json:"request_id"`
-		Parent    *string `json:"parent_tool_use_id"`
+		Type      string   `json:"type"`
+		Subtype   string   `json:"subtype"`
+		RequestID string   `json:"request_id"`
+		Parent    *string  `json:"parent_tool_use_id"`
+		Commands  []string `json:"slash_commands"`
 		Request   struct {
 			Subtype     string          `json:"subtype"`
 			ToolName    string          `json:"tool_name"`
@@ -408,6 +505,11 @@ func (s *Session) handleLine(p *proc, line []byte) {
 		switch h.Subtype {
 		case "hook_started", "hook_response", "hook_progress", "status":
 			return
+		case "init":
+			if len(h.Commands) > 0 {
+				s.commands = h.Commands
+				s.m.rememberCommands(h.Commands)
+			}
 		}
 	case "control_request":
 		s.onControlRequestLocked(p, line, h.RequestID, h.Request.Subtype, &PendingPerm{
@@ -469,7 +571,16 @@ func (s *Session) onControlRequestLocked(p *proc, line []byte, rid, sub string, 
 
 // ---- operations -----------------------------------------------------------
 
-func (s *Session) Send(text string) error {
+func (s *Session) Send(text string, atts []Attachment) error {
+	var content any = text
+	if len(atts) > 0 {
+		note, blocks, err := s.attachmentBlocks(atts)
+		if err != nil {
+			return err
+		}
+		parts := []map[string]any{{"type": "text", "text": strings.TrimSpace(text + "\n\n" + note)}}
+		content = append(parts, blocks...)
+	}
 	s.m.ensureCapacity(s)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -480,7 +591,7 @@ func (s *Session) Send(text string) error {
 		return err
 	}
 	b, _ := json.Marshal(map[string]any{
-		"type": "user", "message": map[string]any{"role": "user", "content": text},
+		"type": "user", "message": map[string]any{"role": "user", "content": content},
 	})
 	if !s.proc.enqueue(append(b, '\n')) {
 		return errors.New("process input queue is full")
@@ -488,13 +599,21 @@ func (s *Session) Send(text string) error {
 	s.inflight++
 	s.lastActive = time.Now()
 	if s.meta.Title == "" {
-		t := []rune(strings.Join(strings.Fields(text), " "))
+		title := text
+		if strings.TrimSpace(title) == "" && len(atts) > 0 {
+			title = atts[0].Name
+		}
+		t := []rune(strings.Join(strings.Fields(title), " "))
 		if len(t) > 40 {
 			t = append(t[:40], '…')
 		}
 		s.meta.Title = string(t)
 	}
-	s.emitLocked(harnessEvent("user_message", map[string]any{"text": text}), true)
+	ev := map[string]any{"text": text}
+	if len(atts) > 0 {
+		ev["attachments"] = atts
+	}
+	s.emitLocked(harnessEvent("user_message", ev), true)
 	s.saveMetaLocked()
 	s.statusChangedLocked()
 	return nil
@@ -593,6 +712,25 @@ func (s *Session) SetModel(model string) error {
 	s.saveMetaLocked()
 	s.emitLocked(harnessEvent("model_changed", map[string]any{"model": model}), true)
 	s.mu.Unlock()
+	return nil
+}
+
+// SetEffort changes the effort level. The CLI only takes it at startup, so an
+// idle process is stopped and the next message resumes the session with the
+// new level; a busy one keeps its current level until it next restarts.
+func (s *Session) SetEffort(level string) error {
+	if level != "" && !effortLevels[level] {
+		return errors.New("invalid effort")
+	}
+	s.mu.Lock()
+	s.meta.Effort = level
+	s.saveMetaLocked()
+	s.emitLocked(harnessEvent("effort_changed", map[string]any{"effort": level}), true)
+	idle := s.proc != nil && s.inflight == 0 && len(s.pending) == 0
+	s.mu.Unlock()
+	if idle {
+		s.Stop("effort changed")
+	}
 	return nil
 }
 

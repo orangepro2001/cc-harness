@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -19,9 +20,12 @@ type CreateReq struct {
 	Title          string `json:"title"`
 	Cwd            string `json:"cwd"`
 	Model          string `json:"model"`
+	Effort         string `json:"effort"`
 	PermissionMode string `json:"permissionMode"`
 	AppendPrompt   string `json:"appendSystemPrompt"`
 }
+
+var effortLevels = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 
 var errNotFound = errors.New("not found")
 
@@ -34,6 +38,33 @@ type Manager struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
+
+	cmdMu    sync.Mutex
+	cmdCache []string // last slash-command list any session reported
+}
+
+func (m *Manager) commandsFile() string { return filepath.Join(m.store.root, "commands.json") }
+
+// rememberCommands keeps the latest list so new sessions can offer completion
+// before their own process has started.
+func (m *Manager) rememberCommands(c []string) {
+	m.cmdMu.Lock()
+	m.cmdCache = append([]string(nil), c...)
+	m.cmdMu.Unlock()
+	if b, err := json.Marshal(c); err == nil {
+		os.WriteFile(m.commandsFile(), b, 0o600)
+	}
+}
+
+func (m *Manager) knownCommands() []string {
+	m.cmdMu.Lock()
+	defer m.cmdMu.Unlock()
+	if m.cmdCache == nil {
+		if b, err := os.ReadFile(m.commandsFile()); err == nil {
+			json.Unmarshal(b, &m.cmdCache)
+		}
+	}
+	return append([]string(nil), m.cmdCache...)
 }
 
 func NewManager(cfg Config, store *Store) *Manager {
@@ -155,6 +186,9 @@ func (m *Manager) Create(user string, req CreateReq) (*Session, error) {
 	if req.Model != "" && !modelRe.MatchString(req.Model) {
 		return nil, errors.New("invalid model")
 	}
+	if req.Effort != "" && !effortLevels[req.Effort] {
+		return nil, errors.New("invalid effort")
+	}
 	mode := req.PermissionMode
 	if mode == "" {
 		mode = "manual"
@@ -172,7 +206,7 @@ func (m *Manager) Create(user string, req CreateReq) (*Session, error) {
 	now := time.Now()
 	meta := SessionMeta{
 		ID: newUUID(), User: user, Title: strings.TrimSpace(req.Title), Cwd: cwd,
-		Model: req.Model, PermissionMode: mode, AppendPrompt: req.AppendPrompt,
+		Model: req.Model, Effort: req.Effort, PermissionMode: mode, AppendPrompt: req.AppendPrompt,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := m.store.SaveMeta(meta); err != nil {

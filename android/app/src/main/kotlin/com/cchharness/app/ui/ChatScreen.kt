@@ -1,5 +1,23 @@
 package com.cchharness.app.ui
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.InputChipDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.ui.text.font.FontFamily
+import com.cchharness.app.DraftAttachment
+import com.cchharness.app.UploadState
+import com.cchharness.core.Attachment
+import com.cchharness.core.EFFORTS
+import com.cchharness.core.MODELS
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,10 +78,22 @@ fun ChatScreen(
     onDeny: (requestId: String) -> Unit,
     onAnswer: (PermissionItem, Map<String, String>) -> Unit,
     onDismissNotice: () -> Unit,
+    drafts: List<DraftAttachment> = emptyList(),
+    commands: List<String> = emptyList(),
+    fallbackModel: String = "",
+    fallbackEffort: String = "",
+    onPickFiles: () -> Unit = {},
+    onRemoveDraft: (Long) -> Unit = {},
+    onSetModel: (String) -> Unit = {},
+    onSetEffort: (String) -> Unit = {},
+    loadAttachment: suspend (Attachment) -> ByteArray? = { null },
 ) {
     val modes = PERMISSION_MODES.filter { it.first != "bypassPermissions" || allowBypass }
     var menuOpen by remember { mutableStateOf(false) }
+    var settingsOpen by remember { mutableStateOf(false) }
     var draft by rememberSaveable { mutableStateOf("") }
+    val uploading = drafts.any { it.state is UploadState.Uploading }
+    val suggestions = slashSuggestions(draft, state.commands.ifEmpty { commands })
     val active = state.status == "busy" || state.status == "awaiting_permission"
 
     Scaffold(
@@ -99,6 +129,14 @@ fun ChatScreen(
                                 },
                                 modifier = Modifier.testTag("menu-stop"),
                             )
+                            DropdownMenuItem(
+                                text = { Text("模型 / Effort…") },
+                                onClick = {
+                                    menuOpen = false
+                                    settingsOpen = true
+                                },
+                                modifier = Modifier.testTag("menu-settings"),
+                            )
                             modes.forEach { (value, label) ->
                                 DropdownMenuItem(
                                     text = { Text("权限: $label" + if (value == (state.permissionMode ?: fallbackMode)) " ✓" else "") },
@@ -125,16 +163,19 @@ fun ChatScreen(
                 )
                 TextButton(onClick = onDismissNotice) { Text("知道了") }
             }
-            MessageList(state, onAllow, onDeny, onAnswer, Modifier.weight(1f))
+            MessageList(state, onAllow, onDeny, onAnswer, loadAttachment, Modifier.weight(1f))
+            if (suggestions.isNotEmpty()) SlashSuggestions(suggestions) { draft = "/$it " }
+            if (drafts.isNotEmpty()) DraftChips(drafts, onRemoveDraft)
             Row(
                 Modifier.fillMaxWidth().padding(8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.Bottom,
             ) {
+                OutlinedButton(onClick = onPickFiles, modifier = Modifier.testTag("chat-attach")) { Text("＋") }
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
-                    placeholder = { Text("输入消息") },
+                    placeholder = { Text("输入消息,/ 调出命令") },
                     maxLines = 5,
                     modifier = Modifier.weight(1f).testTag("chat-input"),
                 )
@@ -143,10 +184,87 @@ fun ChatScreen(
                         onSend(draft)
                         draft = ""
                     },
-                    enabled = draft.isNotBlank(),
+                    enabled = (draft.isNotBlank() || drafts.isNotEmpty()) && !uploading,
                     modifier = Modifier.testTag("chat-send"),
                 ) { Text("发送") }
             }
+        }
+    }
+
+    if (settingsOpen) {
+        AlertDialog(
+            onDismissRequest = { settingsOpen = false },
+            properties = HarnessDialogProperties,
+            modifier = HarnessDialogModifier,
+            title = { Text("模型与 Effort") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    // The CLI reports its full model id on start; show the alias the user picked unless they changed it since.
+                    val chosen = state.model?.takeIf { m -> MODELS.any { it.first == m } } ?: fallbackModel.ifBlank { state.model.orEmpty() }
+                    Dropdown("模型", MODELS, chosen, onSetModel, tag = "chat-model")
+                    Dropdown("Effort", EFFORTS, state.effort ?: fallbackEffort, onSetEffort, tag = "chat-effort")
+                    Text(
+                        "Effort 在下一条消息起生效(空闲时会自动重启后台进程并恢复上下文)。",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { settingsOpen = false }, modifier = Modifier.testTag("chat-settings-close")) { Text("完成") } },
+        )
+    }
+}
+
+/** Commands matching what has been typed after a leading "/" (nothing once arguments start). */
+fun slashSuggestions(draft: String, commands: List<String>, limit: Int = 30): List<String> {
+    if (!draft.startsWith("/") || draft.any { it.isWhitespace() }) return emptyList()
+    val q = draft.drop(1).lowercase()
+    val (starts, rest) = commands.partition { it.lowercase().startsWith(q) }
+    return (starts + rest.filter { q in it.lowercase() }).take(limit)
+}
+
+@Composable
+private fun SlashSuggestions(items: List<String>, onPick: (String) -> Unit) {
+    Surface(
+        tonalElevation = 3.dp,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).heightIn(max = 220.dp).testTag("slash-list"),
+    ) {
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            items.forEach { c ->
+                Text(
+                    "/$c",
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.fillMaxWidth().clickable { onPick(c) }.padding(horizontal = 14.dp, vertical = 10.dp).testTag("slash-$c"),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DraftChips(drafts: List<DraftAttachment>, onRemove: (Long) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp).testTag("draft-chips"),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        drafts.forEach { d ->
+            val suffix = when (val s = d.state) {
+                UploadState.Uploading -> " · 上传中…"
+                is UploadState.Failed -> " · ${s.message}"
+                is UploadState.Done -> if (d.size > 0) " · ${formatSize(d.size)}" else ""
+            }
+            InputChip(
+                selected = false,
+                onClick = { onRemove(d.localId) },
+                label = { Text((if (d.image) "🖼 " else "📄 ") + d.name + suffix, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                trailingIcon = { Text("×") },
+                colors = if (d.state is UploadState.Failed) {
+                    InputChipDefaults.inputChipColors(labelColor = MaterialTheme.colorScheme.error)
+                } else {
+                    InputChipDefaults.inputChipColors()
+                },
+                modifier = Modifier.widthIn(max = 280.dp).testTag("draft-${d.localId}"),
+            )
         }
     }
 }
@@ -176,6 +294,7 @@ private fun MessageList(
     onAllow: (String, Boolean) -> Unit,
     onDeny: (String) -> Unit,
     onAnswer: (PermissionItem, Map<String, String>) -> Unit,
+    loadAttachment: suspend (Attachment) -> ByteArray?,
     modifier: Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -196,7 +315,7 @@ private fun MessageList(
         verticalArrangement = Arrangement.spacedBy(10.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
     ) {
-        items(state.items, key = { it.key }) { item -> ChatItemView(item, onAllow, onDeny, onAnswer) }
+        items(state.items, key = { it.key }) { item -> ChatItemView(item, onAllow, onDeny, onAnswer, loadAttachment) }
         if (state.liveText.isNotEmpty()) {
             item(key = "live") { AssistantBubble(state.liveText, live = true) }
         }

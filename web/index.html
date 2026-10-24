@@ -4,8 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>CC Harness</title>
+<base href="/">
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
@@ -29,7 +30,12 @@
       <button id="btn-logout" title="退出登录">退出</button>
     </header>
     <button id="btn-new" class="primary">＋ 新建会话</button>
+    <button id="btn-import" title="接管本机 Claude Code 里已有的会话">导入本地会话…</button>
     <ul id="list"></ul>
+    <section id="usage" hidden>
+      <h2>用量 <small id="usage-plan"></small></h2>
+      <div id="usage-bars"></div>
+    </section>
   </aside>
 
   <section id="main">
@@ -37,6 +43,8 @@
       <button id="btn-menu" title="会话列表">☰</button>
       <div id="title"></div>
       <span id="status" class="chip"></span>
+      <select id="model" title="模型"></select>
+      <select id="effort" title="推理强度 (effort)"></select>
       <select id="mode" title="权限模式"></select>
       <button id="btn-int" title="中断当前回合">中断</button>
       <button id="btn-stop" title="结束后台进程（会话可恢复）">停止进程</button>
@@ -45,8 +53,14 @@
     <div id="meta"></div>
     <div id="log"></div>
     <form id="composer">
-      <textarea id="input" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
-      <button type="submit" class="primary">发送</button>
+      <div id="atts" hidden></div>
+      <ul id="slash" hidden></ul>
+      <div class="crow">
+        <button type="button" id="btn-attach" title="添加图片或文件" aria-label="添加图片或文件">📎</button>
+        <input type="file" id="file" multiple hidden>
+        <textarea id="input" rows="2" placeholder="输入消息，/ 调出命令，Enter 发送，Shift+Enter 换行；可粘贴或拖入图片/文件"></textarea>
+        <button type="submit" class="primary">发送</button>
+      </div>
     </form>
     <div id="empty">选择或新建一个会话</div>
   </section>
@@ -61,9 +75,10 @@
       <span class="row"><input id="n-cwd" placeholder="留空 = 个人工作区" autocomplete="off"><button type="button" id="n-pick">选择…</button></span>
     </label>
     <label>模型
-      <select id="n-model">
-        <option value="">默认</option><option>opus</option><option>sonnet</option><option>haiku</option><option>fable</option>
-      </select>
+      <select id="n-model"></select>
+    </label>
+    <label>推理强度 (effort)
+      <select id="n-effort"></select>
     </label>
     <label>权限模式<select id="n-mode"></select></label>
     <p id="new-err" class="err"></p>
@@ -72,6 +87,16 @@
       <button value="ok" type="submit" class="primary">创建</button>
     </menu>
   </form>
+</dialog>
+
+<!-- import local sessions -->
+<dialog id="dlg-import">
+  <h3>导入本地会话</h3>
+  <p class="hint">接管本机 Claude Code 里已有的会话：沿用同一个会话 ID 继续对话（<code>--resume</code>）。请先在原处关闭它，避免两边同时写入。</p>
+  <input id="i-filter" placeholder="筛选标题或目录" autocomplete="off">
+  <ul id="i-list"></ul>
+  <p id="i-err" class="err"></p>
+  <menu><button type="button" id="i-close">关闭</button></menu>
 </dialog>
 
 <!-- directory picker -->
@@ -88,6 +113,6 @@
   </menu>
 </dialog>
 
-<script src="/app.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
