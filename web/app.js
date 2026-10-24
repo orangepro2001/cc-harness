@@ -28,6 +28,8 @@ let renderQueued = false;
 let atts = []; // composer attachments: {name, el, id?, promise}
 let commands = []; // slash commands of the current session
 let slashSel = 0;
+// What the activity strip shows: when the turn started, when anything last arrived, which tool runs.
+let act = { since: 0, lastEv: 0, pending: false, live: false, tools: {}, conn: true };
 
 // ---------- helpers ----------
 async function api(method, path, body) {
@@ -226,9 +228,56 @@ function setStatus(st) {
   const c = $("status");
   c.textContent = STATUS[st] || st;
   c.className = "chip " + st;
+  $("input").placeholder = st === "stopped" ? "进程已休眠,发送消息会自动恢复…" : "给 Claude 发消息…";
+  if (st === "busy" || st === "awaiting_permission") { if (!act.since) act.since = Date.now(); act.pending = false; }
+  else if (st === "idle" || st === "stopped") { act.since = 0; act.pending = false; act.live = false; act.tools = {}; }
+  refreshActivity();
   $("btn-int").disabled = !(st === "busy" || st === "awaiting_permission");
   $("btn-stop").disabled = st === "stopped";
 }
+
+const isActive = () => !!cur && (cur.status === "busy" || cur.status === "awaiting_permission");
+
+function resetActivity() {
+  act = { since: 0, lastEv: Date.now(), pending: false, live: false, tools: {}, conn: true };
+  refreshActivity();
+}
+
+function fmtDur(s) {
+  s = Math.max(0, Math.floor(s));
+  return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + (s % 60) + "s";
+}
+
+// One line above the composer, like the CLI's "✻ Thinking… (12s · esc to interrupt)": proves the
+// session is alive, says what it is doing, and turns amber when nothing has arrived for a while.
+function refreshActivity() {
+  const box = $("activity");
+  const running = Object.values(act.tools);
+  const status = cur && cur.status;
+  const show = !!cur && (act.pending || isActive() || !act.conn);
+  box.hidden = !show;
+  const send = $("btn-send");
+  const stopMode = isActive() && !$("input").value.trim() && !atts.length;
+  send.classList.toggle("stop", stopMode);
+  send.textContent = stopMode ? "■" : "↑";
+  send.title = stopMode ? "中断当前回合 (Esc)" : "发送 (Enter)";
+  send.setAttribute("aria-label", stopMode ? "中断" : "发送");
+  if (!show) return;
+  const quiet = (Date.now() - act.lastEv) / 1000;
+  let text, cls = "";
+  if (!act.conn) { text = "连接中断,正在重连…"; cls = "bad"; }
+  else if (status === "awaiting_permission") { text = "等待你授权"; cls = "warn"; }
+  else if (status !== "busy") text = "已发送,等待 Claude 响应…";
+  else if (running.length) text = "运行 " + running[running.length - 1] + "…";
+  else if (act.live) text = "正在输出…";
+  else text = "思考中…";
+  if (act.conn && status === "busy" && quiet > 30) { text += " · " + Math.floor(quiet) + "s 没有新输出(进程仍在运行)"; cls = "warn"; }
+  $("activity").className = cls;
+  $("act-text").textContent = text;
+  $("act-time").textContent = act.since ? "(" + fmtDur((Date.now() - act.since) / 1000) + ")" : "";
+  $("act-stop").hidden = !isActive();
+}
+setInterval(refreshActivity, 1000);
 
 function renderBar() {
   $("title").textContent = cur.title || "(未命名)";
@@ -272,6 +321,7 @@ function openSession(id) {
   $("wrap").textContent = "";
   $("jump").hidden = true;
   $("empty").hidden = true;
+  resetActivity();
   renderBar();
   loadSessions();
   location.hash = id;
@@ -281,12 +331,15 @@ function openSession(id) {
   api("POST", "/api/sessions/" + id + "/sync").catch(() => {}).then(() => {
     if (!cur || cur.id !== id) return;
     es = new EventSource(P + "/api/sessions/" + id + "/events");
+    es.onopen = () => { act.conn = true; act.lastEv = Date.now(); refreshActivity(); };
     es.onmessage = (m) => {
       let ev;
       try { ev = JSON.parse(m.data); } catch (_) { return; }
       handle(ev.data);
     };
     es.onerror = async () => {
+      act.conn = false;
+      refreshActivity();
       // EventSource retries by itself; only check whether our login expired.
       try { await api("GET", "/api/me"); } catch (_) {}
     };
@@ -295,6 +348,8 @@ function openSession(id) {
 
 function handle(d) {
   if (!d) return;
+  act.conn = true;
+  act.lastEv = Date.now();
   switch (d.type) {
     case "harness": return onHarness(d);
     case "system":
@@ -365,8 +420,9 @@ function dropLive() {
 
 function onDelta(e) {
   if (!e) return;
-  if (e.type === "message_start") { dropLive(); return; }
+  if (e.type === "message_start") { dropLive(); act.live = false; return; }
   if (e.type === "content_block_delta" && e.delta && e.delta.type === "text_delta") {
+    act.live = true;
     if (!live) live = { el: add(el("div", "msg asst live")), text: "" };
     live.text += e.delta.text;
     if (!renderQueued) {
@@ -409,6 +465,7 @@ function onAssistant(d) {
       det.appendChild(body);
       tools[b.id] = res;
       res.card = det;
+      act.tools[b.id] = b.name;
       add(det);
     }
   }
@@ -421,6 +478,7 @@ function onToolResults(d) {
     if (b.type !== "tool_result") continue;
     const res = tools[b.tool_use_id];
     if (!res) continue;
+    delete act.tools[b.tool_use_id];
     res.card.classList.remove("run");
     res.card.classList.add(b.is_error ? "err" : "ok");
     let t = b.content;
@@ -435,6 +493,8 @@ function onToolResults(d) {
 
 function onResult(d) {
   dropLive();
+  act.live = false;
+  act.tools = {};
   if (d.is_error || (d.subtype && d.subtype !== "success")) {
     add(el("div", "note bad", "回合结束: " + (d.subtype || "error") + (d.result ? " · " + String(d.result).slice(0, 300) : "")));
   } else {
@@ -527,9 +587,16 @@ async function send() {
   atts = [];
   renderAtts();
   hideSlash();
+  act.pending = true;
+  act.lastEv = Date.now();
+  if (!act.since) act.since = Date.now();
+  refreshActivity();
   try {
     await api("POST", "/api/sessions/" + sid + "/messages", ids.length ? { text: t, attachments: ids } : { text: t });
   } catch (e) {
+    act.pending = false;
+    if (!isActive()) act.since = 0;
+    refreshActivity();
     $("input").value = t;
     autosize();
     atts = keep;
@@ -801,13 +868,21 @@ $("d-mk").onclick = async () => {
   } catch (e) { $("d-err").textContent = e.message; }
 };
 
-$("composer").onsubmit = (e) => { e.preventDefault(); send(); };
+$("composer").onsubmit = (e) => {
+  e.preventDefault();
+  if (isActive() && !$("input").value.trim() && !atts.length) { interrupt(); return; }
+  send();
+};
+function interrupt() {
+  if (cur) api("POST", "/api/sessions/" + cur.id + "/interrupt", {}).catch((e) => add(el("div", "note bad", e.message)));
+}
+$("act-stop").onclick = interrupt;
 function autosize() {
   const t = $("input");
   t.style.height = "auto";
   t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.4) + "px";
 }
-$("input").addEventListener("input", () => { slashSel = 0; showSlash(); autosize(); });
+$("input").addEventListener("input", () => { slashSel = 0; showSlash(); autosize(); refreshActivity(); });
 $("btn-new2").onclick = () => $("btn-new").click();
 $("scrim").onclick = () => document.body.classList.remove("menu");
 document.addEventListener("keydown", (e) => {
@@ -854,7 +929,7 @@ $("effort").onchange = () =>
   api("PATCH", "/api/sessions/" + cur.id, { effort: $("effort").value }).catch((e) => { add(el("div", "note bad", e.message)); $("effort").value = cur.effort || ""; });
 $("mode").onchange = () =>
   api("PATCH", "/api/sessions/" + cur.id, { permissionMode: $("mode").value }).catch((e) => { add(el("div", "note bad", e.message)); $("mode").value = cur.permissionMode; });
-$("btn-int").onclick = () => api("POST", "/api/sessions/" + cur.id + "/interrupt", {}).catch((e) => add(el("div", "note bad", e.message)));
+$("btn-int").onclick = interrupt;
 $("btn-stop").onclick = () => api("POST", "/api/sessions/" + cur.id + "/stop", {}).catch(() => {});
 $("btn-del").onclick = async () => {
   if (!cur || !confirm("删除该会话及其全部记录？")) return;

@@ -54,6 +54,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.rotate
+import com.cchharness.core.ToolCall
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -111,6 +120,14 @@ fun ChatScreen(
     val uploading = drafts.any { it.state is UploadState.Uploading }
     val suggestions = slashSuggestions(draft, state.commands.ifEmpty { commands })
     val active = state.status == "busy" || state.status == "awaiting_permission"
+    var justSent by remember { mutableStateOf(false) } // sent, but the server has not reported anything yet
+    LaunchedEffect(state.status, state.lastSeq) { if (active) justSent = false }
+    LaunchedEffect(justSent) {
+        if (justSent) {
+            delay(20_000)
+            justSent = false
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -219,15 +236,18 @@ fun ChatScreen(
             }
             MessageList(state, onAllow, onDeny, onAnswer, loadAttachment, Modifier.weight(1f))
             if (suggestions.isNotEmpty()) SlashSuggestions(suggestions) { draft = "/$it " }
+            ActivityBar(state, connection, active || justSent, onInterrupt)
             Composer(
                 draft = draft,
                 onDraft = { draft = it },
                 drafts = drafts,
                 active = active,
+                sleeping = state.status == "stopped",
                 canSend = (draft.isNotBlank() || drafts.isNotEmpty()) && !uploading,
                 onSend = {
                     onSend(draft)
                     draft = ""
+                    justSent = true
                 },
                 onInterrupt = onInterrupt,
                 onPickFiles = onPickFiles,
@@ -379,6 +399,7 @@ private fun Composer(
     onDraft: (String) -> Unit,
     drafts: List<DraftAttachment>,
     active: Boolean,
+    sleeping: Boolean,
     canSend: Boolean,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
@@ -408,7 +429,7 @@ private fun Composer(
                     TextField(
                         value = draft,
                         onValueChange = onDraft,
-                        placeholder = { Text("给 Claude 发消息…") },
+                        placeholder = { Text(if (sleeping) "进程已休眠,发送消息会自动恢复…" else "给 Claude 发消息…") },
                         maxLines = 6,
                         colors = TextFieldDefaults.colors(
                             focusedContainerColor = Color.Transparent,
@@ -460,5 +481,91 @@ private fun RoundIconButton(
         modifier = modifier.padding(bottom = 4.dp).size(40.dp),
     ) {
         Box(contentAlignment = Alignment.Center) { content() }
+    }
+}
+
+/** What the session is doing right now, from the newest items of the conversation. */
+internal fun activityLabel(state: ChatState): String {
+    val last = state.items.lastOrNull()
+    return when {
+        state.status == "awaiting_permission" || state.pendingPermissions.isNotEmpty() -> "等待你授权"
+        state.status != "busy" -> "已发送,等待 Claude 响应…"
+        state.liveText.isNotEmpty() -> "正在输出…"
+        last is ToolCall && last.result == null -> "运行 ${last.name}…"
+        else -> "思考中…"
+    }
+}
+
+/**
+ * One line above the input, like the CLI's "✻ Thinking… (12s · esc to interrupt)": proves the
+ * session is alive, says what it is doing and for how long, and turns amber when nothing has
+ * arrived for a while (the process is still running; it is just a long step).
+ */
+@Composable
+private fun ActivityBar(state: ChatState, connection: Connection, visible: Boolean, onInterrupt: () -> Unit) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var since by remember { mutableLongStateOf(0L) }
+    var lastChange by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val connected = connection is Connection.Live
+    val show = visible || !connected
+    LaunchedEffect(state.lastSeq, state.liveText.length, state.status) { lastChange = System.currentTimeMillis() }
+    LaunchedEffect(visible) { since = if (visible) System.currentTimeMillis() else 0L }
+    LaunchedEffect(show) {
+        while (show) {
+            now = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+    if (!show) return
+
+    val quiet = (now - lastChange) / 1000
+    val stalled = connected && state.status == "busy" && quiet > 30
+    val color = when {
+        !connected -> MaterialTheme.colorScheme.error
+        state.status == "awaiting_permission" || stalled -> Harness.colors.warn
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val label = when {
+        !connected -> "连接中断,正在重连…"
+        stalled -> "${activityLabel(state)} · ${quiet}s 没有新输出(进程仍在运行)"
+        else -> activityLabel(state)
+    }
+    val transition = rememberInfiniteTransition(label = "spin")
+    val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(2400, easing = LinearEasing)), label = "angle")
+    Row(
+        Modifier.fillMaxWidth().widthIn(max = 760.dp).padding(horizontal = 18.dp, vertical = 2.dp).testTag("activity-bar"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            "✻",
+            color = if (connected && !stalled && state.status != "awaiting_permission") Harness.colors.brand else color,
+            fontSize = 16.sp,
+            modifier = Modifier.rotate(if (connected) angle else 0f),
+        )
+        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (connected && !stalled) MaterialTheme.colorScheme.onSurface else color,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false).testTag("activity-label"),
+            )
+            if (since > 0) {
+                val s = ((now - since) / 1000).coerceAtLeast(0)
+                Text(
+                    "(" + (if (s < 60) "${s}s" else "${s / 60}m ${s % 60}s") + ")",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("activity-time"),
+                )
+            }
+        }
+        if (state.status == "busy" || state.status == "awaiting_permission") {
+            TextButton(onClick = onInterrupt, modifier = Modifier.testTag("activity-stop")) {
+                Text("中断", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }

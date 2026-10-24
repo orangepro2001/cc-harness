@@ -168,6 +168,55 @@ class ScreensUiTest {
     // ---- chat ----
 
     @Test
+    fun activityBarShowsWhatABusySessionIsDoing() {
+        val running = com.cchharness.core.ToolCall("k1", "tu1", "Bash", "go test", "{}")
+        val calls = showChat(ChatState(items = listOf(running), status = "busy"))
+        rule.onNodeWithTag("activity-label").assertTextContains("运行 Bash…")
+        rule.onNodeWithTag("activity-time").assertExists()
+        rule.onNodeWithTag("activity-stop").performClick()
+        assertEquals(1, calls.interrupts)
+    }
+
+    @Test
+    fun activityBarSaysThinkingStreamingAndWaitingForYou() {
+        showChat(ChatState(status = "busy"))
+        rule.onNodeWithTag("activity-label").assertTextContains("思考中…")
+    }
+
+    @Test
+    fun activityBarShowsStreamingText() {
+        showChat(ChatState(status = "busy", liveText = "正在写"))
+        rule.onNodeWithTag("activity-label").assertTextContains("正在输出…")
+    }
+
+    @Test
+    fun activityBarIsHiddenWhenIdleAndWarnsWhenTheLinkIsDown() {
+        showChat(ChatState(status = "idle"))
+        rule.onNodeWithTag("activity-bar").assertDoesNotExist()
+    }
+
+    @Test
+    fun activityBarReportsALostConnection() {
+        showChat(ChatState(status = "idle"), connection = Connection.Failed("timeout"))
+        rule.onNodeWithTag("activity-label").assertTextContains("连接中断", substring = true)
+    }
+
+    @Test
+    fun sleepingSessionHintsThatSendingWakesIt() {
+        showChat(ChatState(status = "stopped"))
+        rule.onNodeWithText("进程已休眠", substring = true).assertExists()
+    }
+
+    @Test
+    fun sendingShowsTheBarBeforeTheServerReports() {
+        showChat(ChatState(status = "idle"))
+        rule.onNodeWithTag("activity-bar").assertDoesNotExist()
+        rule.onNodeWithTag("chat-input").performTextInput("hi")
+        rule.onNodeWithTag("chat-send").performClick()
+        rule.onNodeWithTag("activity-label").assertTextContains("已发送", substring = true)
+    }
+
+    @Test
     fun rendersARealRecordedConversation() {
         showChat(realState().copy(status = "idle"))
         // opens scrolled to the newest message

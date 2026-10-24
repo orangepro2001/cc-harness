@@ -242,3 +242,16 @@ dialog .chk { flex-direction: row; align-items: center; gap: 6px; margin: 6px 0;
   .msg.user { max-width: 92%; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ---------- activity strip: is Claude alive, what is it doing, for how long ---------- */
+#activity { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 0 8px; font-size: 13px; color: var(--mut); min-height: 24px; }
+#activity .spin { color: var(--acc); font-size: 16px; line-height: 1; display: inline-block; animation: spin 2.4s linear infinite; }
+#activity #act-text { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+#activity #act-time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+#activity #act-stop { margin-left: auto; padding: 1px 10px; font-size: 12px; }
+#activity.warn .spin, #activity.warn #act-text { color: var(--warn); }
+#activity.warn .spin { animation-duration: 6s; }
+#activity.bad .spin, #activity.bad #act-text { color: var(--bad); }
+#activity.bad .spin { animation: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#composer button#btn-send.stop { background: var(--fg); border-color: var(--fg); color: var(--bg); font-size: 13px; }
