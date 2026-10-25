@@ -118,7 +118,7 @@ class ScreenshotTest {
 
     @Test
     fun connect() {
-        rule.setContent { HarnessTheme { ConnectScreen("http://192.168.1.164:8765", "tony", false, "用户名或密码错误") { _, _, _ -> } } }
+        rule.setContent { HarnessTheme { ConnectScreen("http://192.168.1.164:8765", "tony", false, "用户名或密码错误") { _, _, _, _ -> } } }
         rule.onNodeWithTag("connect-password").performTextInput("secret")
         save(null, "01-connect")
     }
@@ -127,6 +127,21 @@ class ScreenshotTest {
     fun sessionList() {
         rule.setContent { HarnessTheme { SessionListScreen("tony", sessions, null, {}, {}, {}, {}, {}, {}) } }
         save(null, "02-sessions")
+    }
+
+    @Test
+    fun hosts() {
+        val hosts = listOf(
+            com.cchharness.app.Host("h1", "家里", "http://192.168.1.164:8765", "tony", "t"),
+            com.cchharness.app.Host("h2", "云服务器", "http://10.0.0.5:8765", "tony", ""),
+        )
+        rule.setContent {
+            HarnessTheme {
+                SessionListScreen("tony", sessions, null, {}, {}, {}, {}, {}, {}, hostName = "家里", onHosts = {})
+                com.cchharness.app.ui.HostsDialog(hosts, "h1", {}, {}, { _, _, _ -> true }, {}, {})
+            }
+        }
+        save(null, "02b-hosts")
     }
 
     @Test

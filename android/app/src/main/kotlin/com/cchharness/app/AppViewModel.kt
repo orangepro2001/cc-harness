@@ -31,6 +31,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.IOException
+import java.util.UUID
 
 sealed interface Screen {
     data object Starting : Screen
@@ -66,6 +67,7 @@ class AppViewModel(
     private val version: AppVersion = AppVersion(0, ""),
     private val updateDir: File? = null,
     private val installer: ApkInstaller? = null,
+    private val newHostId: () -> String = { UUID.randomUUID().toString().take(8) },
 ) : ViewModel() {
     private val _screen = MutableStateFlow<Screen>(Screen.Starting)
     private val _busy = MutableStateFlow(false)
@@ -86,6 +88,10 @@ class AppViewModel(
     private val _terminalError = MutableStateFlow<String?>(null)
     private val _terminal = MutableStateFlow<OpenTerminal?>(null)
     private val _termFont = MutableStateFlow(settings.termFontSp)
+    private val _hosts = MutableStateFlow(settings.hosts)
+    private val _active = MutableStateFlow(settings.hosts.firstOrNull { it.id == settings.activeHostId } ?: settings.hosts.firstOrNull())
+    private val _connectTarget = MutableStateFlow<Host?>(null)
+    private val _hostsDialog = MutableStateFlow(false)
 
     val screen: StateFlow<Screen> = _screen
     val busy: StateFlow<Boolean> = _busy
@@ -118,11 +124,19 @@ class AppViewModel(
     val terminal: StateFlow<OpenTerminal?> = _terminal
     val termFont: StateFlow<Int> = _termFont
 
-    val savedUrl: String get() = settings.baseUrl
-    val savedUser: String get() = settings.user
+    /** All saved servers, and the one the app is showing. */
+    val hosts: StateFlow<List<Host>> = _hosts
+    val activeHost: StateFlow<Host?> = _active
+
+    /** Server the connect screen logs in to; null while adding a new one. */
+    val connectTarget: StateFlow<Host?> = _connectTarget
+
+    /** Whether the server list is open. */
+    val hostsDialog: StateFlow<Boolean> = _hostsDialog
 
     private var api: HarnessApi? = null
     private var poller: Job? = null
+    private var connectJob: Job? = null
     private var updateJob: Job? = null
     private var checkedForUpdate = false
     private var nextDraftId = 1L
@@ -131,27 +145,29 @@ class AppViewModel(
     }
 
     init {
-        viewModelScope.launch { restore() }
+        connectJob = viewModelScope.launch { restore() }
     }
 
     // ---- connection ----
 
+    /** Opens the active host with its saved token, or asks for a login. */
     private suspend fun restore() {
-        val url = settings.baseUrl
-        val token = settings.token
-        if (url.isBlank() || token.isBlank()) {
+        val host = _active.value
+        _connectTarget.value = host
+        if (host == null || !host.loggedIn) {
             _screen.value = Screen.Connect
             return
         }
         try {
-            val client = apiFactory(url).also { it.token = token }
+            val client = apiFactory(host.url).also { it.token = host.token }
             _me.value = client.me()
             api = client
             enterSessions()
         } catch (e: CancellationException) {
             throw e
         } catch (e: AuthException) {
-            settings.token = ""
+            forgetToken(host.id)
+            _connectTarget.value = _active.value
             _connectError.value = "登录已过期,请重新登录"
             _screen.value = Screen.Connect
         } catch (e: Exception) {
@@ -160,7 +176,16 @@ class AppViewModel(
         }
     }
 
-    fun connect(rawUrl: String, user: String, password: String) {
+    /** Tries the active host again with its saved token (after it was unreachable). */
+    fun retry() {
+        if (_busy.value) return
+        _connectError.value = null
+        _screen.value = Screen.Starting
+        connectJob?.cancel()
+        connectJob = viewModelScope.launch { restore() }
+    }
+
+    fun connect(rawUrl: String, user: String, password: String, name: String = "") {
         if (_busy.value) return
         viewModelScope.launch {
             _busy.value = true
@@ -169,10 +194,19 @@ class AppViewModel(
                 val url = normalizeUrl(rawUrl)
                 val client = apiFactory(url)
                 val login = client.login(user.trim().lowercase(), password)
-                settings.baseUrl = url
-                settings.user = login.user
-                settings.token = login.token
-                _me.value = client.me()
+                val me = client.me()
+                // logging in again to a saved server (same entry or same address) keeps its name
+                val known = _connectTarget.value ?: _hosts.value.firstOrNull { it.url == url }
+                val host = Host(
+                    id = known?.id ?: newHostId(),
+                    name = known?.name?.takeIf { it.isNotBlank() } ?: name.trim().ifBlank { defaultHostName(url) },
+                    url = url,
+                    user = login.user,
+                    token = login.token,
+                )
+                saveHost(host)
+                activate(host)
+                _me.value = me
                 api = client
                 enterSessions()
             } catch (e: CancellationException) {
@@ -193,31 +227,144 @@ class AppViewModel(
         }
     }
 
+    /** Logs out of the active host; it stays in the list and only needs the password again. */
     fun logout() {
         val client = api
+        val id = _active.value?.id
         viewModelScope.launch {
             runCatching { client?.logout() }
-            settings.token = ""
-            leaveChat()
-            leaveTerminal()
-            poller?.cancel()
-            api = null
-            _me.value = null
-            _sessions.value = emptyList()
-            _connectError.value = null
+            if (id != null) forgetToken(id)
+            dropConnection()
+            _connectTarget.value = _active.value
             _screen.value = Screen.Connect
         }
     }
 
     private fun authLost() {
-        settings.token = ""
+        _active.value?.id?.let(::forgetToken)
+        dropConnection()
+        _connectTarget.value = _active.value
+        _connectError.value = "登录已过期,请重新登录"
+        _screen.value = Screen.Connect
+    }
+
+    /** Stops everything tied to the current server and clears what it showed. */
+    private fun dropConnection() {
+        connectJob?.cancel()
         leaveChat()
         leaveTerminal()
         poller?.cancel()
         api = null
         _me.value = null
-        _connectError.value = "登录已过期,请重新登录"
+        _sessions.value = emptyList()
+        _terminals.value = emptyList()
+        _usage.value = null
+        _usageError.value = null
+        _notice.value = null
+        _local.value = null
+        _connectError.value = null
+    }
+
+    // ---- hosts ----
+
+    private fun saveHost(host: Host) {
+        val list = _hosts.value
+        _hosts.value = if (list.any { it.id == host.id }) list.map { if (it.id == host.id) host else it } else list + host
+        settings.hosts = _hosts.value
+        if (_active.value?.id == host.id) _active.value = host
+    }
+
+    private fun forgetToken(id: String) {
+        _hosts.value.firstOrNull { it.id == id }?.let { saveHost(it.copy(token = "")) }
+    }
+
+    /** Makes [host] the one the app shows (and opens on next start), leaving the previous server's state behind. */
+    private fun activate(host: Host) {
+        dropConnection()
+        settings.activeHostId = host.id
+        _active.value = host
+        _connectTarget.value = host
+    }
+
+    fun openHosts() {
+        _hostsDialog.value = true
+    }
+
+    fun closeHosts() {
+        _hostsDialog.value = false
+    }
+
+    /** Switches to another saved server; its sessions are loaded fresh. */
+    fun switchHost(id: String) {
+        val host = _hosts.value.firstOrNull { it.id == id } ?: return
+        _hostsDialog.value = false
+        if (host.id == _active.value?.id && api != null) return
+        activate(host)
+        _screen.value = Screen.Starting
+        connectJob = viewModelScope.launch { restore() }
+    }
+
+    /** Opens the connect screen to log in to a server that is not in the list yet. */
+    fun addHost() {
+        _hostsDialog.value = false
+        _connectError.value = null
+        _connectTarget.value = null
         _screen.value = Screen.Connect
+    }
+
+    /** Leaves the add-server screen: back to the sessions if one is open, else to the active server's login. */
+    fun cancelAddHost() {
+        _connectError.value = null
+        if (api != null) {
+            _connectTarget.value = _active.value
+            _screen.value = Screen.Sessions
+        } else {
+            _connectTarget.value = _active.value
+        }
+    }
+
+    /**
+     * Renames a server and/or changes its address. A new address is a different server, so its
+     * login is dropped. Returns false (nothing changed) when the address is unusable.
+     */
+    fun editHost(id: String, name: String, rawUrl: String): Boolean {
+        val old = _hosts.value.firstOrNull { it.id == id } ?: return false
+        val url = try {
+            normalizeUrl(rawUrl)
+        } catch (e: IllegalArgumentException) {
+            return false
+        }
+        val moved = url != old.url
+        val edited = old.copy(name = name.trim().ifBlank { defaultHostName(url) }, url = url, token = if (moved) "" else old.token)
+        saveHost(edited)
+        if (moved && _active.value?.id == id) {
+            dropConnection()
+            _connectTarget.value = edited
+            _screen.value = Screen.Connect
+        }
+        return true
+    }
+
+    /** Forgets a server and signs out of it. Removing the active one moves on to the next, or to the login screen. */
+    fun removeHost(id: String) {
+        val host = _hosts.value.firstOrNull { it.id == id } ?: return
+        val wasActive = _active.value?.id == id
+        val client = if (wasActive) api else if (host.loggedIn) apiFactory(host.url).also { it.token = host.token } else null
+        if (client != null) viewModelScope.launch { runCatching { client.logout() } }
+        _hosts.value = _hosts.value.filterNot { it.id == id }
+        settings.hosts = _hosts.value
+        if (!wasActive) return
+        val next = _hosts.value.firstOrNull()
+        if (next != null) {
+            switchHost(next.id)
+        } else {
+            dropConnection()
+            settings.activeHostId = ""
+            _active.value = null
+            _connectTarget.value = null
+            _hostsDialog.value = false
+            _screen.value = Screen.Connect
+        }
     }
 
     // ---- session list ----
@@ -250,7 +397,8 @@ class AppViewModel(
     private suspend fun refreshOnce() {
         val client = api ?: return
         try {
-            _sessions.value = client.listSessions()
+            val list = client.listSessions()
+            if (api === client) _sessions.value = list
         } catch (e: CancellationException) {
             throw e
         } catch (e: AuthException) {
@@ -263,8 +411,11 @@ class AppViewModel(
     private suspend fun refreshUsage() {
         val client = api ?: return
         try {
-            _usage.value = client.usage()
-            _usageError.value = null
+            val u = client.usage()
+            if (api === client) {
+                _usage.value = u
+                _usageError.value = null
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: AuthException) {

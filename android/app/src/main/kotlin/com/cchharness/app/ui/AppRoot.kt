@@ -10,6 +10,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -18,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import com.cchharness.app.ui.ChatScreen
 import com.cchharness.app.ui.ConnectScreen
+import com.cchharness.app.ui.HostsDialog
 import com.cchharness.app.ui.ImportDialog
 import com.cchharness.app.ui.NewSessionDialog
 import com.cchharness.app.ui.SessionListScreen
@@ -30,6 +32,7 @@ import com.cchharness.app.ui.UpdateDialog
 @Composable
 fun AppRoot(vm: AppViewModel) {
     val screen by vm.screen.collectAsState()
+    val hostsOpen by vm.hostsDialog.collectAsState()
     Surface(Modifier.fillMaxSize()) {
         when (val s = screen) {
             Screen.Starting -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -38,12 +41,41 @@ fun AppRoot(vm: AppViewModel) {
             Screen.Connect -> {
                 val busy by vm.busy.collectAsState()
                 val error by vm.connectError.collectAsState()
-                ConnectScreen(vm.savedUrl, vm.savedUser, busy, error, vm::connect)
+                val target by vm.connectTarget.collectAsState()
+                val hosts by vm.hosts.collectAsState()
+                // a fresh state per server, so a half-typed address does not leak into another login
+                key(target?.id ?: "new") {
+                    ConnectScreen(
+                        initialUrl = target?.url.orEmpty(),
+                        initialUser = target?.user.orEmpty(),
+                        busy = busy,
+                        error = error,
+                        askName = target == null,
+                        hostName = target?.name.orEmpty(),
+                        onCancel = if (target == null && hosts.isNotEmpty()) vm::cancelAddHost else null,
+                        onRetry = if (target?.loggedIn == true) vm::retry else null,
+                        onHosts = if (hosts.isNotEmpty()) vm::openHosts else null,
+                        onConnect = vm::connect,
+                    )
+                }
             }
             Screen.Sessions -> SessionsRoute(vm)
             is Screen.Chat -> ChatRoute(vm, s.id)
             Screen.Terminals -> TerminalsRoute(vm)
             is Screen.Terminal -> TerminalRoute(vm, s.id)
+        }
+        if (hostsOpen) {
+            val hosts by vm.hosts.collectAsState()
+            val active by vm.activeHost.collectAsState()
+            HostsDialog(
+                hosts = hosts,
+                activeId = active?.id,
+                onSwitch = vm::switchHost,
+                onAdd = vm::addHost,
+                onEdit = vm::editHost,
+                onRemove = vm::removeHost,
+                onDismiss = vm::closeHosts,
+            )
         }
     }
 }
@@ -61,9 +93,12 @@ private fun SessionsRoute(vm: AppViewModel) {
     val usage by vm.usage.collectAsState()
     val usageError by vm.usageError.collectAsState()
     val localImport by vm.localImport.collectAsState()
+    val activeHost by vm.activeHost.collectAsState()
 
     SessionListScreen(
         user = me?.user.orEmpty(),
+        hostName = activeHost?.name.orEmpty(),
+        onHosts = vm::openHosts,
         sessions = sessions,
         notice = notice,
         onOpen = vm::open,

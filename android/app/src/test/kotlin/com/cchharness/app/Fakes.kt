@@ -21,10 +21,20 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.serialization.json.JsonElement
 
 class FakeSettings(
-    override var baseUrl: String = "",
-    override var user: String = "",
-    override var token: String = "",
-) : SettingsStore
+    baseUrl: String = "",
+    user: String = "",
+    token: String = "",
+) : SettingsStore {
+    override var hosts: List<Host> =
+        if (baseUrl.isBlank()) emptyList() else listOf(Host("h1", defaultHostName(baseUrl), baseUrl, user, token))
+    override var activeHostId: String = hosts.firstOrNull()?.id.orEmpty()
+
+    /** The active host's fields, for assertions. */
+    private val active get() = hosts.first { it.id == activeHostId }
+    val baseUrl: String get() = active.url
+    val user: String get() = active.user
+    val token: String get() = active.token
+}
 
 /** Scriptable stand-in for the server. Every call is recorded in [calls]. */
 class FakeApi : HarnessApi {

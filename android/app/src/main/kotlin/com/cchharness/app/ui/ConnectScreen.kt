@@ -2,6 +2,7 @@ package com.cchharness.app.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,6 +20,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,9 +38,15 @@ fun ConnectScreen(
     initialUser: String,
     busy: Boolean,
     error: String?,
-    onConnect: (url: String, user: String, password: String) -> Unit,
+    askName: Boolean = false,
+    hostName: String = "",
+    onCancel: (() -> Unit)? = null,
+    onRetry: (() -> Unit)? = null,
+    onHosts: (() -> Unit)? = null,
+    onConnect: (url: String, user: String, password: String, name: String) -> Unit,
 ) {
     var url by rememberSaveable { mutableStateOf(initialUrl) }
+    var name by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     val ready = url.isNotBlank() && password.isNotEmpty() && !busy
 
@@ -53,8 +61,25 @@ fun ConnectScreen(
     ) {
         Text("✻", color = Harness.colors.brand, style = MaterialTheme.typography.headlineMedium)
         Text("CC Harness", style = MaterialTheme.typography.headlineMedium)
-        Text("连接到常驻的 Claude Code 服务", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            if (hostName.isNotBlank()) "登录到 $hostName" else "连接到常驻的 Claude Code 服务",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag("connect-subtitle"),
+        )
         Spacer(Modifier.height(24.dp))
+        if (askName) {
+            OutlinedTextField(
+                shape = RoundedCornerShape(12.dp),
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("名称(可选)") },
+                placeholder = { Text("例如 家里 / 云服务器") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().testTag("connect-name"),
+            )
+            Spacer(Modifier.height(12.dp))
+        }
         OutlinedTextField(
             shape = RoundedCornerShape(12.dp),
             value = url,
@@ -83,12 +108,26 @@ fun ConnectScreen(
         Spacer(Modifier.height(16.dp))
         Button(
             // The server runs as one user and ignores the name; it is only sent for servers that still tell users apart.
-            onClick = { onConnect(url, initialUser.ifBlank { DEFAULT_USER }, password) },
+            onClick = { onConnect(url, initialUser.ifBlank { DEFAULT_USER }, password, name) },
             enabled = ready,
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier.fillMaxWidth().height(50.dp).testTag("connect-button"),
         ) {
             if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Text("连接")
+        }
+        if (onRetry != null || onHosts != null || onCancel != null) {
+            Spacer(Modifier.height(4.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                if (onRetry != null) {
+                    TextButton(onClick = onRetry, modifier = Modifier.testTag("connect-retry")) { Text("用已保存的登录重试") }
+                }
+                if (onHosts != null) {
+                    TextButton(onClick = onHosts, modifier = Modifier.testTag("connect-hosts")) { Text("切换主机") }
+                }
+                if (onCancel != null) {
+                    TextButton(onClick = onCancel, modifier = Modifier.testTag("connect-cancel")) { Text("取消") }
+                }
+            }
         }
     }
 }

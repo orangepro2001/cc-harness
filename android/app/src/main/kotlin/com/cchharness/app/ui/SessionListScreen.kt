@@ -71,6 +71,8 @@ fun SessionListScreen(
     onImport: () -> Unit = {},
     showTerminal: Boolean = false,
     onTerminals: () -> Unit = {},
+    hostName: String = "",
+    onHosts: (() -> Unit)? = null,
 ) {
     var confirmDelete by remember { mutableStateOf<SessionInfo?>(null) }
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
@@ -81,9 +83,14 @@ fun SessionListScreen(
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 title = {
-                    Column {
+                    Column(
+                        if (onHosts != null) Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onHosts).testTag("host-switcher") else Modifier,
+                    ) {
                         BrandTitle()
-                        if (user.isNotBlank()) Text(user, style = MaterialTheme.typography.labelSmall, color = muted)
+                        val sub = if (onHosts != null && hostName.isNotBlank()) "$hostName ▾" else user
+                        if (sub.isNotBlank()) {
+                            Text(sub, style = MaterialTheme.typography.labelSmall, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("host-label"))
+                        }
                     }
                 },
                 actions = {

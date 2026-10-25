@@ -9,6 +9,7 @@ import com.cchharness.core.UploadSource
 import com.cchharness.core.AuthException
 import com.cchharness.core.CreateSession
 import com.cchharness.core.LocalSession
+import com.cchharness.core.Me
 import com.cchharness.core.Usage
 import com.cchharness.core.UsageLimit
 import com.cchharness.core.RateLimitedException
@@ -675,6 +676,240 @@ class AppViewModelTest {
         assertTrue("term-create:claude:sess-1:" in api.calls)
         assertIs<Screen.Terminal>(v.screen.value)
         assertNull(v.chat.value)
+        v.viewModelScope.cancel()
+    }
+
+    // ---- several hosts ----
+
+    private class TwoHosts {
+        val a = FakeApi().also { it.sessions += SessionInfo(id = "a1", title = "on A", cwd = "/work", status = "idle") }
+        val b = FakeApi().also { it.sessions += SessionInfo(id = "b1", title = "on B", cwd = "/work", status = "idle") }
+        val byUrl = mapOf("http://a:1" to a, "http://b:2" to b)
+        val settings = FakeSettings("http://a:1", "tony", "tok-a").also {
+            it.hosts += Host("hb", "server B", "http://b:2", "tony", "tok-b")
+        }
+    }
+
+    private fun TestScope.twoHosts(t: TwoHosts): AppViewModel =
+        AppViewModel(t.settings, { t.byUrl.getValue(it) }, 4_000, newHostId = { "new1" }).also { runCurrent() }
+
+    @Test
+    fun switchingHostLoadsThatServersSessionsAndRemembersIt() = run {
+        val t = TwoHosts()
+        val v = twoHosts(t)
+        assertEquals(listOf("a1"), v.sessions.value.map { it.id })
+
+        v.switchHost("hb"); runCurrent()
+        assertEquals(Screen.Sessions, v.screen.value)
+        assertEquals("hb", v.activeHost.value?.id)
+        assertEquals("hb", t.settings.activeHostId)
+        assertEquals("tok-b", t.b.token)
+        assertEquals(listOf("b1"), v.sessions.value.map { it.id })
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun switchingHostClosesTheOpenChat() = run {
+        val t = TwoHosts()
+        val v = twoHosts(t)
+        v.open("a1"); runCurrent()
+        assertEquals(Screen.Chat("a1"), v.screen.value)
+
+        v.switchHost("hb"); runCurrent()
+        assertNull(v.chat.value)
+        assertEquals(Screen.Sessions, v.screen.value)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun switchingToAHostWithoutLoginAsksForItsPassword() = run {
+        val t = TwoHosts()
+        t.settings.hosts = t.settings.hosts.map { if (it.id == "hb") it.copy(token = "") else it }
+        val v = twoHosts(t)
+        v.switchHost("hb"); runCurrent()
+        assertEquals(Screen.Connect, v.screen.value)
+        assertEquals("hb", v.connectTarget.value?.id)
+        assertTrue(v.sessions.value.isEmpty())
+
+        v.connect("b:2", "tony", "pw"); runCurrent()
+        assertEquals(Screen.Sessions, v.screen.value)
+        assertEquals(2, v.hosts.value.size)
+        assertEquals("tok-tony", v.hosts.value.first { it.id == "hb" }.token)
+        assertEquals("server B", v.hosts.value.first { it.id == "hb" }.name)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun unreachableHostCanBeLeftForAnother() = run {
+        val t = TwoHosts()
+        t.b.onMe = { throw IOException("timeout") }
+        val v = twoHosts(t)
+        v.switchHost("hb"); runCurrent()
+        assertEquals(Screen.Connect, v.screen.value)
+        assertTrue(v.connectError.value!!.contains("无法连接"))
+        assertEquals("tok-b", t.settings.hosts.first { it.id == "hb" }.token)
+
+        v.switchHost("h1"); runCurrent()
+        assertEquals(Screen.Sessions, v.screen.value)
+        assertEquals(listOf("a1"), v.sessions.value.map { it.id })
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun retryReconnectsWithTheSavedLogin() = run {
+        val t = TwoHosts()
+        var down = true
+        t.a.onMe = { if (down) throw IOException("down") else Me("tony", "/work", listOf("/shared")) }
+        val v = twoHosts(t)
+        assertEquals(Screen.Connect, v.screen.value)
+        down = false
+        v.retry(); runCurrent()
+        assertEquals(Screen.Sessions, v.screen.value)
+        assertNull(v.connectError.value)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun addingAHostKeepsTheOthersAndMakesTheNewOneActive() = run {
+        val t = TwoHosts()
+        val c = FakeApi().also { it.sessions += SessionInfo(id = "c1", title = "on C", cwd = "/work", status = "idle") }
+        val byUrl = t.byUrl + ("http://c:3" to c)
+        val v = AppViewModel(t.settings, { byUrl.getValue(it) }, 4_000, newHostId = { "hc" }).also { runCurrent() }
+
+        v.addHost()
+        assertEquals(Screen.Connect, v.screen.value)
+        assertNull(v.connectTarget.value)
+        v.connect("c:3", "tony", "pw", "cloud"); runCurrent()
+
+        assertEquals(Screen.Sessions, v.screen.value)
+        assertEquals(listOf("h1", "hb", "hc"), v.hosts.value.map { it.id })
+        assertEquals("cloud", v.activeHost.value?.name)
+        assertEquals("hc", t.settings.activeHostId)
+        assertEquals(listOf("c1"), v.sessions.value.map { it.id })
+        assertEquals("tok-a", t.settings.hosts.first { it.id == "h1" }.token)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun addingTheAddressOfASavedHostReusesIt() = run {
+        val t = TwoHosts()
+        val v = twoHosts(t)
+        v.addHost()
+        v.connect("b:2", "tony", "pw", "dup"); runCurrent()
+        assertEquals(2, v.hosts.value.size)
+        assertEquals("hb", v.activeHost.value?.id)
+        assertEquals("server B", v.activeHost.value?.name)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun cancelAddingGoesBackToTheSessions() = run {
+        val t = TwoHosts()
+        val v = twoHosts(t)
+        v.addHost()
+        v.cancelAddHost()
+        assertEquals(Screen.Sessions, v.screen.value)
+        assertEquals("h1", v.connectTarget.value?.id)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun failedLoginOfANewHostSavesNothing() = run {
+        val t = TwoHosts()
+        val c = FakeApi().also { it.onLogin = { _, _ -> throw AuthException("bad") } }
+        val v = AppViewModel(t.settings, { if (it == "http://c:3") c else t.byUrl.getValue(it) }, 4_000).also { runCurrent() }
+        v.addHost()
+        v.connect("c:3", "tony", "wrong"); runCurrent()
+        assertEquals("密码错误", v.connectError.value)
+        assertEquals(2, t.settings.hosts.size)
+        assertEquals("h1", t.settings.activeHostId)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun logoutKeepsTheHostButForgetsItsLogin() = run {
+        val t = TwoHosts()
+        val v = twoHosts(t)
+        v.logout(); runCurrent()
+        assertEquals(Screen.Connect, v.screen.value)
+        assertEquals(2, v.hosts.value.size)
+        assertEquals("", t.settings.hosts.first { it.id == "h1" }.token)
+        assertEquals("tok-b", t.settings.hosts.first { it.id == "hb" }.token)
+        assertEquals("h1", v.connectTarget.value?.id)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun editingNameKeepsTheLoginButANewAddressDropsIt() = run {
+        val t = TwoHosts()
+        val v = twoHosts(t)
+
+        assertTrue(v.editHost("hb", " Home ", "http://b:2/"))
+        assertEquals("Home", v.hosts.value.first { it.id == "hb" }.name)
+        assertEquals("tok-b", v.hosts.value.first { it.id == "hb" }.token)
+
+        assertTrue(v.editHost("hb", "Home", "b:9"))
+        val hb = t.settings.hosts.first { it.id == "hb" }
+        assertEquals("http://b:9", hb.url)
+        assertEquals("", hb.token)
+        // not the active host, so the screen stays
+        assertEquals(Screen.Sessions, v.screen.value)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun movingTheActiveHostAsksForANewLogin() = run {
+        val t = TwoHosts()
+        val v = twoHosts(t)
+        assertTrue(v.editHost("h1", "A", "a:9"))
+        assertEquals(Screen.Connect, v.screen.value)
+        assertEquals("http://a:9", v.connectTarget.value?.url)
+        assertTrue(v.sessions.value.isEmpty())
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun editRejectsAnUnusableAddress() = run {
+        val t = TwoHosts()
+        val v = twoHosts(t)
+        assertEquals(false, v.editHost("hb", "x", "  "))
+        assertEquals("http://b:2", v.hosts.value.first { it.id == "hb" }.url)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun removingAnInactiveHostOnlyDropsIt() = run {
+        val t = TwoHosts()
+        val v = twoHosts(t)
+        v.removeHost("hb"); runCurrent()
+        assertEquals(listOf("h1"), v.hosts.value.map { it.id })
+        assertEquals(listOf("h1"), t.settings.hosts.map { it.id })
+        assertEquals(Screen.Sessions, v.screen.value)
+        assertTrue("logout" in t.b.calls)
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun removingTheActiveHostMovesToTheNextOne() = run {
+        val t = TwoHosts()
+        val v = twoHosts(t)
+        v.removeHost("h1"); runCurrent()
+        assertEquals("hb", v.activeHost.value?.id)
+        assertEquals(Screen.Sessions, v.screen.value)
+        assertEquals(listOf("b1"), v.sessions.value.map { it.id })
+        v.viewModelScope.cancel()
+    }
+
+    @Test
+    fun removingTheLastHostReturnsToTheEmptyLogin() = run {
+        val settings = FakeSettings("http://h:1", "tony", "t")
+        val v = vm(settings, FakeApi())
+        v.removeHost("h1"); runCurrent()
+        assertEquals(Screen.Connect, v.screen.value)
+        assertNull(v.activeHost.value)
+        assertNull(v.connectTarget.value)
+        assertEquals("", settings.activeHostId)
+        assertTrue(settings.hosts.isEmpty())
         v.viewModelScope.cancel()
     }
 }

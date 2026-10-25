@@ -18,6 +18,7 @@ import com.cchharness.app.ui.ChatScreen
 import com.cchharness.app.ui.ConnectScreen
 import com.cchharness.app.ui.DirectoryPickerDialog
 import com.cchharness.app.ui.HarnessTheme
+import com.cchharness.app.ui.HostsDialog
 import com.cchharness.app.ui.MarkdownText
 import com.cchharness.app.ui.NewSessionDialog
 import com.cchharness.app.ui.SessionListScreen
@@ -113,7 +114,7 @@ class ScreensUiTest {
     fun connectButtonNeedsAllFieldsAndPassesThemOn() {
         var got: Triple<String, String, String>? = null
         rule.setContent {
-            HarnessTheme { ConnectScreen("", "tony", busy = false, error = null) { u, n, p -> got = Triple(u, n, p) } }
+            HarnessTheme { ConnectScreen("", "tony", busy = false, error = null) { u, n, p, _ -> got = Triple(u, n, p) } }
         }
         rule.onNodeWithTag("connect-button").assertIsNotEnabled()
         rule.onNodeWithTag("connect-url").performTextInput("192.168.1.164:8765")
@@ -125,7 +126,7 @@ class ScreensUiTest {
 
     @Test
     fun connectShowsErrorAndDisablesWhileBusy() {
-        rule.setContent { HarnessTheme { ConnectScreen("http://h", "tony", busy = true, error = "用户名或密码错误") { _, _, _ -> } } }
+        rule.setContent { HarnessTheme { ConnectScreen("http://h", "tony", busy = true, error = "用户名或密码错误") { _, _, _, _ -> } } }
         rule.onNodeWithTag("connect-error").assertTextContains("用户名或密码错误")
         rule.onNodeWithTag("connect-button").assertIsNotEnabled()
     }
@@ -522,5 +523,98 @@ class ScreensUiTest {
         rule.waitForIdle()
         rule.onNodeWithTag("term-banner").assertTextContains("终端已结束", substring = true)
         scope.cancel()
+    }
+
+    // ---- hosts ----
+
+    private val hostList = listOf(
+        Host("h1", "家里", "http://192.168.1.164:8765", "tony", "t"),
+        Host("h2", "云服务器", "http://10.0.0.5:8765", "tony", ""),
+    )
+
+    @Test
+    fun hostsDialogSwitchesAddsAndMarksTheLoginState() {
+        var switched: String? = null
+        var added = false
+        rule.setContent {
+            HarnessTheme { HostsDialog(hostList, "h1", { switched = it }, { added = true }, { _, _, _ -> true }, {}, {}) }
+        }
+        rule.onNodeWithText("云服务器").assertExists()
+        rule.onNodeWithText("http://10.0.0.5:8765 · 未登录").assertExists()
+        rule.onNodeWithText("http://192.168.1.164:8765 · 当前").assertExists()
+        rule.onNodeWithTag("host-h2").performClick()
+        assertEquals("h2", switched)
+        rule.onNodeWithTag("host-add").performClick()
+        assertTrue(added)
+    }
+
+    @Test
+    fun editingAHostPassesTheNewNameAndAddress() {
+        var got: Triple<String, String, String>? = null
+        rule.setContent {
+            HarnessTheme { HostsDialog(hostList, "h1", {}, {}, { id, n, u -> got = Triple(id, n, u); true }, {}, {}) }
+        }
+        rule.onNodeWithTag("host-edit-h2").performClick()
+        rule.onNodeWithTag("host-name").performTextInput("!")
+        rule.onNodeWithTag("host-save").performClick()
+        assertEquals(Triple("h2", "!云服务器", "http://10.0.0.5:8765"), got)
+        rule.onNodeWithTag("host-save").assertDoesNotExist()
+    }
+
+    @Test
+    fun rejectedAddressStaysInTheEditDialog() {
+        rule.setContent {
+            HarnessTheme { HostsDialog(hostList, "h1", {}, {}, { _, _, _ -> false }, {}, {}) }
+        }
+        rule.onNodeWithTag("host-edit-h1").performClick()
+        rule.onNodeWithTag("host-save").performClick()
+        rule.onNodeWithTag("host-url-error").assertExists()
+    }
+
+    @Test
+    fun removingAHostNeedsASecondTap() {
+        var removed: String? = null
+        rule.setContent {
+            HarnessTheme { HostsDialog(hostList, "h1", {}, {}, { _, _, _ -> true }, { removed = it }, {}) }
+        }
+        rule.onNodeWithTag("host-edit-h2").performClick()
+        rule.onNodeWithTag("host-remove").performClick()
+        assertEquals(null, removed)
+        rule.onNodeWithTag("host-remove").performClick()
+        assertEquals("h2", removed)
+    }
+
+    @Test
+    fun sessionListTitleOpensTheHostSwitcher() {
+        var opened = false
+        rule.setContent {
+            HarnessTheme {
+                SessionListScreen("tony", sessions, null, {}, {}, {}, {}, {}, {}, hostName = "家里", onHosts = { opened = true })
+            }
+        }
+        rule.onNodeWithTag("host-switcher").assertTextContains("家里 ▾", substring = true)
+        rule.onNodeWithTag("host-switcher").performClick()
+        assertTrue(opened)
+    }
+
+    @Test
+    fun connectScreenOffersRetrySwitchAndCancelWhenGiven() {
+        var retried = false
+        var cancelled = false
+        var named: String? = null
+        rule.setContent {
+            HarnessTheme {
+                ConnectScreen("", "", busy = false, error = null, askName = true, onCancel = { cancelled = true }, onRetry = { retried = true }, onHosts = {}) { _, _, _, n -> named = n }
+            }
+        }
+        rule.onNodeWithTag("connect-name").performTextInput("云")
+        rule.onNodeWithTag("connect-url").performTextInput("h:1")
+        rule.onNodeWithTag("connect-password").performTextInput("p")
+        rule.onNodeWithTag("connect-button").performClick()
+        assertEquals("云", named)
+        rule.onNodeWithTag("connect-retry").performClick()
+        rule.onNodeWithTag("connect-cancel").performClick()
+        rule.onNodeWithTag("connect-hosts").assertExists()
+        assertTrue(retried && cancelled)
     }
 }
