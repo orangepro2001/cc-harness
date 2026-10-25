@@ -130,7 +130,7 @@ val MODELS: List<Pair<String, String>> = listOf(
 val EFFORTS: List<Pair<String, String>> = listOf(
     "" to "默认",
     "low" to "低",
-    "medium" to "中",
+    "medium" to "中等",
     "high" to "高",
     "xhigh" to "超高",
     "max" to "最高",

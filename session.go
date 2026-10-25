@@ -285,6 +285,9 @@ func (s *Session) buildArgs() []string {
 	if s.meta.Effort != "" {
 		args = append(args, "--effort", s.meta.Effort)
 	}
+	if s.meta.Ultracode {
+		args = append(args, "--settings", `{"ultracode":true}`)
+	}
 	if s.meta.AppendPrompt != "" {
 		args = append(args, "--append-system-prompt", s.meta.AppendPrompt)
 	}
@@ -702,8 +705,12 @@ func (s *Session) SetModel(model string) error {
 	s.mu.Lock()
 	running := s.proc != nil
 	s.mu.Unlock()
-	if running && model != "" {
-		if err := s.control(map[string]any{"subtype": "set_model", "model": model}); err != nil && !errors.Is(err, errNotRunning) {
+	if running {
+		live := model
+		if live == "" {
+			live = "default" // the CLI's name for "no explicit model"
+		}
+		if err := s.control(map[string]any{"subtype": "set_model", "model": live}); err != nil && !errors.Is(err, errNotRunning) {
 			return err
 		}
 	}
@@ -715,21 +722,73 @@ func (s *Session) SetModel(model string) error {
 	return nil
 }
 
-// SetEffort changes the effort level. The CLI only takes it at startup, so an
-// idle process is stopped and the next message resumes the session with the
-// new level; a busy one keeps its current level until it next restarts.
+// applyFlagSettings changes a live process's settings without interrupting it:
+// a running turn finishes as it was, the next one uses the new values. It
+// reports false when the process could not take them (not running, or a CLI
+// too old to know the request), so the caller can fall back to a restart.
+func (s *Session) applyFlagSettings(settings map[string]any) bool {
+	err := s.control(map[string]any{"subtype": "apply_flag_settings", "settings": settings})
+	if err != nil && !errors.Is(err, errNotRunning) {
+		log.Printf("session %s: apply_flag_settings: %v", s.meta.ID, err)
+	}
+	return err == nil
+}
+
+// restartIfIdle stops an idle process so the next message resumes the
+// session with the saved settings. A busy one is left alone.
+func (s *Session) restartIfIdle(reason string) {
+	s.mu.Lock()
+	idle := s.proc != nil && s.inflight == 0 && len(s.pending) == 0
+	s.mu.Unlock()
+	if idle {
+		s.Stop(reason)
+	}
+}
+
+// SetEffort changes the effort level for the next turn. A live process takes
+// it in place; if it cannot, an idle one is restarted with --effort instead.
 func (s *Session) SetEffort(level string) error {
 	if level != "" && !effortLevels[level] {
 		return errors.New("invalid effort")
 	}
 	s.mu.Lock()
+	running := s.proc != nil
+	s.mu.Unlock()
+	applied := false
+	if running {
+		var v any
+		if level != "" {
+			v = level
+		}
+		applied = s.applyFlagSettings(map[string]any{"effortLevel": v})
+	}
+	s.mu.Lock()
 	s.meta.Effort = level
 	s.saveMetaLocked()
 	s.emitLocked(harnessEvent("effort_changed", map[string]any{"effort": level}), true)
-	idle := s.proc != nil && s.inflight == 0 && len(s.pending) == 0
 	s.mu.Unlock()
-	if idle {
-		s.Stop("effort changed")
+	if running && !applied {
+		s.restartIfIdle("effort changed")
+	}
+	return nil
+}
+
+// SetUltracode turns standing workflow orchestration on or off for the next turn.
+func (s *Session) SetUltracode(on bool) error {
+	s.mu.Lock()
+	running := s.proc != nil
+	s.mu.Unlock()
+	applied := false
+	if running {
+		applied = s.applyFlagSettings(map[string]any{"ultracode": on})
+	}
+	s.mu.Lock()
+	s.meta.Ultracode = on
+	s.saveMetaLocked()
+	s.emitLocked(harnessEvent("ultracode_changed", map[string]any{"ultracode": on}), true)
+	s.mu.Unlock()
+	if running && !applied {
+		s.restartIfIdle("ultracode changed")
 	}
 	return nil
 }

@@ -101,8 +101,7 @@ select { cursor: pointer; padding-right: 6px; }
 .chip.idle { color: var(--ok); } .chip.busy { color: var(--acc); } .chip.busy::before, .chip.awaiting_permission::before { animation: pulse 1.2s ease-in-out infinite; }
 .chip.awaiting_permission { color: var(--warn); } .chip.stopped { color: var(--mut); }
 .chip { color: var(--fg); }
-#bar select { padding: 4px 6px; font-size: 13px; background: var(--bg2); border-color: var(--line); max-width: 9.5em; }
-#bar button, #bar select { white-space: nowrap; }
+#bar button { white-space: nowrap; }
 #bar button { font-size: 13px; }
 
 #log { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 20px 16px 8px; scroll-behavior: auto; }
@@ -170,7 +169,7 @@ select { cursor: pointer; padding-right: 6px; }
 /* ---------- composer ---------- */
 #composer { padding: 6px 16px calc(14px + env(safe-area-inset-bottom)); position: relative; }
 #composer > * { max-width: 780px; margin-left: auto; margin-right: auto; }
-.cbox { background: var(--card); border: 1px solid var(--line2); border-radius: 18px; padding: 8px 10px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 6px; }
+.cbox { position: relative; background: var(--card); border: 1px solid var(--line2); border-radius: 18px; padding: 8px 10px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 6px; }
 .cbox:focus-within { border-color: var(--acc); box-shadow: 0 0 0 3px var(--accbg); }
 #composer .crow { display: flex; gap: 8px; align-items: flex-end; }
 #input { flex: 1; resize: none; max-height: 40vh; border: 0; background: transparent; padding: 6px 4px; box-shadow: none !important; line-height: 1.5; }
@@ -224,6 +223,36 @@ dialog .chk { flex-direction: row; align-items: center; gap: 6px; margin: 6px 0;
 #i-list .i-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #i-list .i-sub { font-size: 12px; color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- options bar + popover (mode / model / effort / ultracode) ---------- */
+.orow { display: flex; align-items: center; gap: 6px; padding: 0 2px; }
+.orow .grow { flex: 1; }
+.optchip { display: inline-flex; align-items: center; gap: 5px; max-width: 48vw; padding: 2px 9px; font-size: 12.5px; color: var(--mut); background: transparent; border: 1px solid transparent; border-radius: 999px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.optchip:hover, .optchip.on { background: var(--bg2); color: var(--fg); }
+.optchip b { font-weight: 500; color: var(--fg); }
+.optchip.risky { color: var(--warn); }
+.pop { position: absolute; z-index: 6; bottom: calc(100% + 6px); right: 0; width: min(360px, calc(100vw - 20px)); max-height: min(70vh, 560px); overflow-y: auto; margin: 0; padding: 8px; background: var(--card); border: 1px solid var(--line2); border-radius: 14px; box-shadow: var(--shadow); }
+.pop h4 { display: flex; justify-content: space-between; margin: 6px 8px 4px; font-size: 12px; font-weight: 500; color: var(--mut); }
+.pop h4 kbd { font: 11px var(--mono); padding: 0 5px; border: 1px solid var(--line2); border-radius: 4px; }
+.pop .opt { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 6px 8px; text-align: left; background: none; border: 0; border-radius: 8px; }
+.pop .opt:hover { background: var(--bg2); }
+.pop .opt .tx { flex: 1; min-width: 0; }
+.pop .opt .nm { display: block; font-size: 14px; line-height: 1.35; }
+.pop .opt .ds { display: block; font-size: 12px; line-height: 1.35; color: var(--mut); }
+.pop .opt .ck { width: 1.2em; text-align: center; color: var(--acc); }
+.pop hr { border: 0; border-top: 1px solid var(--line); margin: 6px 0; }
+.pop .eff { padding: 2px 10px 6px; }
+.pop .eff .top { display: flex; justify-content: space-between; align-items: baseline; font-size: 14px; }
+.pop .eff .top small { color: var(--mut); font-size: 12px; }
+.pop .eff input[type=range] { width: 100%; margin: 8px 0 2px; padding: 0; accent-color: var(--acc); background: none; border: 0; box-shadow: none; }
+.pop .eff.unset input[type=range] { opacity: .45; }
+.pop .eff .ticks { display: flex; justify-content: space-between; font-size: 11px; color: var(--mut); }
+.pop .eff .ticks span.sel { color: var(--fg); font-weight: 600; }
+.pop .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; font-size: 14px; }
+.pop .row small { display: block; color: var(--mut); font-size: 12px; }
+.pop .row input[type=checkbox] { width: 2.4em; height: 1.3em; accent-color: var(--acc); flex: none; }
+.pop .note { margin: 4px 8px 2px; font-size: 12px; color: var(--mut); }
+.pop .linkbtn { background: none; border: 0; padding: 0; color: var(--acc2); font-size: 12px; cursor: pointer; }
+
 /* ---------- narrow screens ---------- */
 #scrim { display: none; }
 @media (max-width: 760px) {
@@ -231,9 +260,8 @@ dialog .chk { flex-direction: row; align-items: center; gap: 6px; margin: 6px 0;
   body.menu #side { transform: none; }
   body.menu #scrim { display: block; position: fixed; inset: 0; z-index: 4; background: rgba(31,30,29,.4); }
   #btn-menu { display: inline-block; }
-  #btn-stop, #btn-del, #model, #effort { display: none; }
+  #btn-stop, #btn-del { display: none; }
   #bar { padding: 8px 10px; gap: 6px; }
-  #bar select { max-width: 6.5em; }
   .chip { font-size: 0; padding: 0; border: 0; background: none; gap: 0; }
   .chip::before { width: 10px; height: 10px; }
   #log { padding: 14px 12px 6px; }

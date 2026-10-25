@@ -28,7 +28,7 @@ journalctl --user -u cc-harness -f
 | GET | `/api/fs?path=&hidden=1` | 列目录（无 path = 根目录列表） |
 | POST | `/api/fs/mkdir` `{parent,name}` | 新建文件夹 |
 | GET/POST | `/api/sessions` | 列表 / 新建 `{title,cwd,model,effort,permissionMode,appendSystemPrompt}` |
-| GET/PATCH/DELETE | `/api/sessions/{id}` | 详情 / 改标题、模式、模型、`effort`（low/medium/high/xhigh/max）/ 删除 |
+| GET/PATCH/DELETE | `/api/sessions/{id}` | 详情 / 改标题、模式、模型、`effort`（low/medium/high/xhigh/max，各模型可用档位见 `GET /api/models`）、`ultracode` / 删除 |
 | POST | `/api/sessions/{id}/messages` `{text,attachments:[id]}` | 发送消息（202，可排队）；只发附件也可以 |
 | POST | `/api/sessions/{id}/uploads?name=` | 原始请求体即文件，返回 `{id,name,kind,mime,size}`；默认上限 25 MB |
 | GET | `/api/sessions/{id}/uploads/{id}` | 取回附件（图片内联，其余下载） |
@@ -76,8 +76,11 @@ Claude 的 OAuth 凭据属于服务器上的操作系统用户（`~/.claude`）�
   文件类型按内容嗅探而非客户端声明；单文件上限 `HARNESS_MAX_UPLOAD_MB`（默认 25），每会话总量 1 GiB。
 - **`/` 命令补全**：输入 `/` 弹出当前会话可用的命令（含 skills），选中后补全；命令列表来自 claude
   的 init 消息，新会话在首次对话前沿用最近一次的列表。
-- **Effort**：新建会话和会话内都能选（模型旁）。CLI 只在启动时接受 `--effort`，所以空闲时改动会停掉
-  后台进程，下一条消息自动 `--resume` 并带上新值。
+- **模式 / 模型 / Effort / Ultracode**：网页输入框下方两个按钮，和 VS Code 插件一样的弹层：权限模式（Shift+Tab 循环）、
+  思考强度滑块、Ultracode 开关，另一个按钮选模型。修改立即保存并发给正在运行的 claude（`set_permission_mode`、
+  `set_model`、`apply_flag_settings`），不打断当前回合，下一条消息起生效；进程没在运行时则在下次启动带上
+  （`--effort`、`--settings`）。模型列表和每个模型可选的 effort 档位来自 CLI（`GET /api/models`，缓存 10 分钟）。
+  新会话默认权限模式为自动分类（`auto`）。
 - **Android 自更新**：`deploy/publish-android.sh` 构建 APK、读取 versionCode，写入
   `<data>/releases/android.json`（`HARNESS_RELEASES` 可改位置）。App 登录后自动检查，也可手动点
   「检查更新」；下载后校验 SHA-256，再交给系统安装器。发布前在 `android/gradle.properties`

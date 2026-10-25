@@ -13,14 +13,24 @@ const MODES = {
   dontAsk: "不询问(拒绝未授权)",
   bypassPermissions: "全部放行",
 };
-const MODELS = ["opus", "sonnet", "haiku", "fable"];
-const EFFORTS = { "": "默认", low: "低", medium: "中", high: "高", xhigh: "超高", max: "最高" };
+const MODE_DESC = {
+  manual: "每次编辑前都先询问你",
+  acceptEdits: "自动应用文件编辑,其他操作仍会询问",
+  plan: "先探索代码并给出计划,批准后再动手",
+  auto: "通过安全检查的操作自动批准,有风险的才暂停询问",
+  dontAsk: "拒绝一切未预先授权的操作",
+  bypassPermissions: "跳过所有权限检查(危险)",
+};
+const MODE_CYCLE = ["manual", "acceptEdits", "plan", "auto"]; // Shift+Tab order, as in the VS Code extension
+// Effort levels, lowest first. Which of them a model offers comes from /api/models.
+const EFFORTS = { low: "低", medium: "中等", high: "高", xhigh: "超高", max: "最高" };
 const STATUS = { stopped: "进程未运行", idle: "空闲", busy: "运行中", awaiting_permission: "等待授权" };
 
 let me = null;
 let cur = null; // current session view
 let es = null;
 let sessions = [];
+let models = []; // model catalog reported by the CLI (GET /api/models)
 let tools = {}; // tool_use_id -> result element
 let perms = {}; // request id -> card element
 let live = null; // {el, text}
@@ -234,6 +244,7 @@ function setStatus(st) {
   refreshActivity();
   $("btn-int").disabled = !(st === "busy" || st === "awaiting_permission");
   $("btn-stop").disabled = st === "stopped";
+  if (optsKind) renderOpts();
 }
 
 const isActive = () => !!cur && (cur.status === "busy" || cur.status === "awaiting_permission");
@@ -283,24 +294,187 @@ function renderBar() {
   $("title").textContent = cur.title || "(未命名)";
   $("meta").textContent = cur.cwd + (cur.model ? " · " + cur.model : "");
   $("meta").title = cur.cwd + " · " + cur.id;
-  $("mode").value = cur.permissionMode;
-  setModel($("model"), cur.model);
-  $("effort").value = cur.effort || "";
+  renderOptChips();
   setStatus(cur.status);
 }
 
-// Selects a model, adding it when it is a custom value the list lacks.
-function setModel(sel, v) {
-  v = v || "";
-  if (v && ![...sel.options].some((o) => o.value === v)) sel.appendChild(new Option(v, v));
-  sel.value = v;
+// ---------- model / mode / effort options ----------
+// One popover next to the composer holds everything a session lets you change
+// while it runs. A change is saved and sent to the live process at once; it
+// never interrupts a running turn and is used from the next message on.
+const EFFORT_ORDER = Object.keys(EFFORTS);
+const modelEntry = (v) => models.find((m) => m.value === (v || "default"));
+const pickable = () => models.filter((m) => m.value !== "default" && !m.value.startsWith("claude-"));
+const moreModels = () => models.filter((m) => m.value.startsWith("claude-"));
+
+// The name to show for a model value; "" is whatever the CLI resolves its default to.
+function modelName(v) {
+  const m = modelEntry(v);
+  if (!m) return v || "默认";
+  if (m.value === "default" && m.resolved) {
+    const t = models.find((x) => x.value !== "default" && x.resolved === m.resolved);
+    if (t) return t.name;
+  }
+  return m.name;
+}
+const isCurModel = (m) => {
+  const v = cur.model || "";
+  if (m.value === v) return true;
+  const d = modelEntry("");
+  return !v && !!d && !!d.resolved && d.resolved === m.resolved;
+};
+const levelsFor = (v) => { const m = modelEntry(v); return m ? m.effortLevels : EFFORT_ORDER; };
+
+// The level a model really runs at when asked for `want`: the nearest one it offers below.
+function snapEffort(want, levels) {
+  for (let i = EFFORT_ORDER.indexOf(want); i >= 0; i--) if (levels.includes(EFFORT_ORDER[i])) return EFFORT_ORDER[i];
+  return levels[0] || "";
 }
 
-function fillModelEffort(modelSel, effortSel) {
-  modelSel.textContent = ""; effortSel.textContent = "";
-  modelSel.appendChild(new Option("默认", ""));
-  for (const m of MODELS) modelSel.appendChild(new Option(m, m));
-  for (const [k, v] of Object.entries(EFFORTS)) effortSel.appendChild(new Option(k ? "effort: " + v : "effort 默认", k));
+async function loadModels() {
+  try { models = (await api("GET", "/api/models")).models || []; } catch (_) {}
+  if (!models.length) models = [{ value: "default", name: "默认", effortLevels: EFFORT_ORDER }];
+}
+
+function renderOptChips() {
+  if (!cur) return;
+  const mc = $("opt-model");
+  mc.textContent = "";
+  mc.appendChild(el("b", "", modelName(cur.model)));
+  const lv = levelsFor(cur.model);
+  if (lv.length && cur.effort) mc.appendChild(document.createTextNode(" " + EFFORTS[snapEffort(cur.effort, lv)]));
+  if (cur.ultracode) mc.appendChild(document.createTextNode(" · Ultracode"));
+  const md = $("opt-mode");
+  md.textContent = (MODES[cur.permissionMode] || cur.permissionMode) + " ▾";
+  md.classList.toggle("risky", cur.permissionMode === "bypassPermissions");
+  if (optsKind) renderOpts();
+}
+
+// Saves a setting and applies it to the live session, then shows what the server settled on.
+function patchOpts(body) {
+  const c = cur;
+  if (!c) return;
+  api("PATCH", "/api/sessions/" + c.id, body)
+    .then((v) => { if (cur === c) { for (const k of ["permissionMode", "model", "effort", "ultracode"]) c[k] = v[k]; renderOptChips(); } })
+    .catch((e) => { add(el("div", "note bad", e.message)); if (cur === c) renderOptChips(); });
+}
+
+function optItem(name, desc, on, onclick) {
+  const b = el("button", "opt");
+  b.type = "button";
+  b.appendChild(el("span", "ck", on ? "✓" : ""));
+  const tx = el("span", "tx");
+  tx.appendChild(el("span", "nm", name));
+  if (desc) tx.appendChild(el("span", "ds", desc));
+  b.appendChild(tx);
+  b.onclick = onclick;
+  return b;
+}
+
+let showMoreModels = false;
+let optsKind = ""; // which popover is open: "mode" | "model" | "" (closed)
+
+function renderOpts() {
+  const box = $("opts");
+  const keep = box.scrollTop;
+  box.textContent = "";
+  if (!cur || !optsKind) return;
+  if (optsKind === "model") renderModelList(box); else renderModeMenu(box);
+  if (isActive()) box.appendChild(el("div", "note", "当前回合不会被打断,修改从下一条消息起生效。"));
+  box.scrollTop = keep;
+}
+
+function renderModeMenu(box) {
+  const h = el("h4", "", "权限模式");
+  h.appendChild(el("kbd", "", "⇧ Tab"));
+  box.appendChild(h);
+  for (const m of Object.keys(MODES)) {
+    if (m === "bypassPermissions" && !me.allowBypass && cur.permissionMode !== m) continue;
+    box.appendChild(optItem(MODES[m], MODE_DESC[m], cur.permissionMode === m, () => patchOpts({ permissionMode: m })));
+  }
+
+  const lv = levelsFor(cur.model);
+  if (lv.length) {
+    box.appendChild(el("hr"));
+    const unset = !cur.effort;
+    const shown = unset ? snapEffort("high", lv) : snapEffort(cur.effort, lv);
+    const wrap = el("div", "eff" + (unset ? " unset" : ""));
+    const top = el("div", "top");
+    top.appendChild(el("span", "", "思考强度"));
+    const val = el("small", "", unset ? "默认(随模型)" : EFFORTS[shown]);
+    top.appendChild(val);
+    wrap.appendChild(top);
+    const r = document.createElement("input");
+    r.type = "range";
+    r.min = 0; r.max = lv.length - 1; r.step = 1;
+    r.value = Math.max(0, lv.indexOf(shown));
+    r.setAttribute("aria-label", "思考强度");
+    const ticks = el("div", "ticks");
+    lv.forEach((l, i) => ticks.appendChild(el("span", i === +r.value && !unset ? "sel" : "", EFFORTS[l])));
+    r.oninput = () => { val.textContent = EFFORTS[lv[+r.value]]; wrap.classList.remove("unset"); [...ticks.children].forEach((t, i) => t.classList.toggle("sel", i === +r.value)); };
+    r.onchange = () => patchOpts({ effort: lv[+r.value] });
+    wrap.appendChild(r);
+    wrap.appendChild(ticks);
+    if (!unset) {
+      const rs = el("button", "linkbtn", "恢复默认");
+      rs.type = "button";
+      rs.onclick = () => patchOpts({ effort: "" });
+      wrap.appendChild(rs);
+    }
+    box.appendChild(wrap);
+  }
+
+  box.appendChild(el("hr"));
+  const row = el("label", "row");
+  const tx = el("span", "", "Ultracode");
+  tx.appendChild(el("small", "", "常驻的动态工作流编排,任意强度下都可用"));
+  row.appendChild(tx);
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = !!cur.ultracode;
+  cb.onchange = () => patchOpts({ ultracode: cb.checked });
+  row.appendChild(cb);
+  box.appendChild(row);
+}
+
+function renderModelList(box) {
+  box.appendChild(el("h4", "", "模型"));
+  for (const m of pickable()) box.appendChild(optItem(m.name, m.description, isCurModel(m), () => patchOpts({ model: m.value })));
+  if (cur.model && !modelEntry(cur.model)) box.appendChild(optItem(cur.model, "自定义模型", true, () => {}));
+  const more = moreModels();
+  if (!more.length) return;
+  const t = el("button", "opt");
+  t.type = "button";
+  t.appendChild(el("span", "ck", showMoreModels ? "▾" : "▸"));
+  t.appendChild(el("span", "nm", "更多模型"));
+  t.onclick = () => { showMoreModels = !showMoreModels; renderOpts(); };
+  box.appendChild(t);
+  if (showMoreModels) for (const m of more) box.appendChild(optItem(m.name, m.description, m.value === cur.model, () => patchOpts({ model: m.value })));
+}
+
+// Opens the popover of `kind`, switches to it when the other one is open, closes it when it is already shown.
+function toggleOpts(kind) {
+  optsKind = kind && kind !== optsKind ? kind : "";
+  $("opts").hidden = !optsKind;
+  $("opt-model").classList.toggle("on", optsKind === "model");
+  $("opt-mode").classList.toggle("on", optsKind === "mode");
+  renderOpts();
+}
+
+function cycleMode() {
+  if (!cur) return;
+  const i = MODE_CYCLE.indexOf(cur.permissionMode);
+  patchOpts({ permissionMode: MODE_CYCLE[(i + 1) % MODE_CYCLE.length] });
+}
+
+// The "new session" dialog: an explicit model and level, or whatever the CLI defaults to.
+function fillNewDialog() {
+  const ms = $("n-model"), es = $("n-effort");
+  ms.textContent = ""; es.textContent = "";
+  ms.appendChild(new Option("默认", ""));
+  for (const m of pickable()) ms.appendChild(new Option(m.name, m.value));
+  es.appendChild(new Option("默认(随模型)", ""));
+  for (const [k, v] of Object.entries(EFFORTS)) es.appendChild(new Option(v, k));
 }
 
 // ---------- session view ----------
@@ -317,6 +491,7 @@ function openSession(id) {
   clearAtts();
   commands = [];
   hideSlash();
+  toggleOpts("");
   loadCommands(id);
   $("wrap").textContent = "";
   $("jump").hidden = true;
@@ -399,9 +574,10 @@ function onHarness(d) {
     case "process_started": add(el("div", "note", d.resume ? "后台进程已启动 (恢复上下文)" : "后台进程已启动")); break;
     case "process_exit": add(el("div", "note", "后台进程已退出: " + d.reason)); break;
     case "error": add(el("div", "note bad", d.message)); break;
-    case "model_changed": if (cur) { cur.model = d.model; setModel($("model"), d.model); } break;
-    case "effort_changed": if (cur) { cur.effort = d.effort; $("effort").value = d.effort || ""; } break;
-    case "mode_changed": if (cur) { cur.permissionMode = d.permissionMode; $("mode").value = d.permissionMode; } break;
+    case "model_changed": if (cur) { cur.model = d.model; renderOptChips(); } break;
+    case "effort_changed": if (cur) { cur.effort = d.effort; renderOptChips(); } break;
+    case "ultracode_changed": if (cur) { cur.ultracode = d.ultracode; renderOptChips(); } break;
+    case "mode_changed": if (cur) { cur.permissionMode = d.permissionMode; renderOptChips(); } break;
     case "permission_resolved": {
       const c = perms[d.requestId];
       if (c) {
@@ -708,15 +884,15 @@ async function enterApp() {
   $("login").hidden = true;
   $("app").hidden = false;
   $("who").textContent = me.user;
-  fillModelEffort($("model"), $("effort"));
-  fillModelEffort($("n-model"), $("n-effort"));
-  const sel = $("mode"), nsel = $("n-mode");
-  sel.textContent = ""; nsel.textContent = "";
+  await loadModels();
+  fillNewDialog();
+  const nsel = $("n-mode");
+  nsel.textContent = "";
   for (const [k, v] of Object.entries(MODES)) {
     if (k === "bypassPermissions" && !me.allowBypass) continue;
-    sel.appendChild(new Option(v, k));
     nsel.appendChild(new Option(v, k));
   }
+  nsel.value = "auto";
   loadUsage();
   await loadSessions();
   const id = location.hash.slice(1);
@@ -886,6 +1062,7 @@ $("input").addEventListener("input", () => { slashSel = 0; showSlash(); autosize
 $("btn-new2").onclick = () => $("btn-new").click();
 $("scrim").onclick = () => document.body.classList.remove("menu");
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && optsKind) { toggleOpts(""); return; }
   if (e.key === "Escape" && cur && !$("btn-int").disabled && !document.querySelector("dialog[open]") && $("slash").hidden) {
     api("POST", "/api/sessions/" + cur.id + "/interrupt", {}).catch(() => {});
   }
@@ -899,13 +1076,14 @@ $("input").addEventListener("keydown", (e) => {
       showSlash();
       return;
     }
-    if ((e.key === "Tab" || e.key === "Enter") && !e.isComposing && e.keyCode !== 229) {
+    if ((e.key === "Tab" && !e.shiftKey || e.key === "Enter") && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       pickSlash(sl[slashSel]);
       return;
     }
     if (e.key === "Escape") { e.preventDefault(); hideSlash(); return; }
   }
+  if (e.key === "Tab" && e.shiftKey && cur) { e.preventDefault(); cycleMode(); return; }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
 });
 $("btn-attach").onclick = () => $("file").click();
@@ -923,12 +1101,11 @@ $("main").addEventListener("drop", (e) => {
   e.preventDefault();
   addFiles([...e.dataTransfer.files]);
 });
-$("model").onchange = () =>
-  api("PATCH", "/api/sessions/" + cur.id, { model: $("model").value }).catch((e) => { add(el("div", "note bad", e.message)); setModel($("model"), cur.model); });
-$("effort").onchange = () =>
-  api("PATCH", "/api/sessions/" + cur.id, { effort: $("effort").value }).catch((e) => { add(el("div", "note bad", e.message)); $("effort").value = cur.effort || ""; });
-$("mode").onchange = () =>
-  api("PATCH", "/api/sessions/" + cur.id, { permissionMode: $("mode").value }).catch((e) => { add(el("div", "note bad", e.message)); $("mode").value = cur.permissionMode; });
+$("opt-model").onclick = () => toggleOpts("model");
+$("opt-mode").onclick = () => toggleOpts("mode");
+document.addEventListener("pointerdown", (e) => {
+  if (optsKind && !e.target.closest("#opts, #opt-model, #opt-mode")) toggleOpts("");
+});
 $("btn-int").onclick = interrupt;
 $("btn-stop").onclick = () => api("POST", "/api/sessions/" + cur.id + "/stop", {}).catch(() => {});
 $("btn-del").onclick = async () => {

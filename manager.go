@@ -191,7 +191,7 @@ func (m *Manager) Create(user string, req CreateReq) (*Session, error) {
 	}
 	mode := req.PermissionMode
 	if mode == "" {
-		mode = "manual"
+		mode = "auto"
 	}
 	if !permissionModes[mode] {
 		return nil, errors.New("invalid permission mode")

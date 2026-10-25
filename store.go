@@ -36,6 +36,7 @@ type SessionMeta struct {
 	Model          string    `json:"model,omitempty"`
 	Effort         string    `json:"effort,omitempty"` // low|medium|high|xhigh|max; empty = CLI default
 	PermissionMode string    `json:"permissionMode"`
+	Ultracode      bool      `json:"ultracode,omitempty"` // standing dynamic-workflow orchestration
 	AppendPrompt   string    `json:"appendSystemPrompt,omitempty"`
 	Started        bool      `json:"started"` // claude has a transcript to --resume
 	Turns          int       `json:"turns"`

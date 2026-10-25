@@ -269,7 +269,7 @@ fun ChatScreen(
                     Dropdown("模型", MODELS, chosen, onSetModel, tag = "chat-model")
                     Dropdown("Effort", EFFORTS, state.effort ?: fallbackEffort, onSetEffort, tag = "chat-effort")
                     Text(
-                        "Effort 在下一条消息起生效(空闲时会自动重启后台进程并恢复上下文)。",
+                        "模型与 Effort 立即保存,不会打断当前回合,从下一条消息起生效。",
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }

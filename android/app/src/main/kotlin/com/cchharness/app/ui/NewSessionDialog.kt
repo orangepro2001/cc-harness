@@ -42,7 +42,7 @@ fun NewSessionDialog(
     var cwd by remember { mutableStateOf("") }
     var model by remember { mutableStateOf("") }
     var effort by remember { mutableStateOf("") }
-    var mode by remember { mutableStateOf("manual") }
+    var mode by remember { mutableStateOf("auto") }
     var picking by remember { mutableStateOf(false) }
     val modes = PERMISSION_MODES.filter { it.first != "bypassPermissions" || me.allowBypass }
 

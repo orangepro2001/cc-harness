@@ -114,6 +114,16 @@ func mockClaude() {
 		case "control_request":
 			req, _ := m["request"].(map[string]any)
 			id, _ := m["request_id"].(string)
+			if f := os.Getenv("MOCK_ARGS_FILE"); f != "" {
+				fh, _ := os.OpenFile(f, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+				b, _ := json.Marshal(req)
+				fmt.Fprintln(fh, "CONTROL "+string(b))
+				fh.Close()
+			}
+			if req["subtype"] == "initialize" {
+				emit(fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":%q,"response":{"models":[{"value":"default","displayName":"Default","supportsEffort":true,"supportedEffortLevels":["low","medium","high","max","bogus"]},{"value":"haiku","displayName":"Haiku"}]}}}`, id))
+				continue
+			}
 			emit(fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":%q}}`, id))
 			if req["subtype"] == "interrupt" {
 				emit(`{"type":"result","subtype":"error_during_execution","is_error":true}`)
@@ -283,7 +293,7 @@ func TestSessionLifecycleResumeAndPermissions(t *testing.T) {
 	if len(ls) != 2 || !strings.Contains(ls[0], "--session-id "+id) || !strings.Contains(ls[1], "--resume "+id) {
 		t.Fatalf("unexpected spawn args: %q", ls)
 	}
-	if !strings.Contains(ls[0], "--permission-prompt-tool stdio") || !strings.Contains(ls[0], "--permission-mode manual") {
+	if !strings.Contains(ls[0], "--permission-prompt-tool stdio") || !strings.Contains(ls[0], "--permission-mode auto") {
 		t.Fatalf("missing permission flags: %q", ls[0])
 	}
 }
@@ -878,19 +888,59 @@ func TestEffortAndCommands(t *testing.T) {
 		t.Fatalf("new session commands: %v", c2)
 	}
 
-	// Changing effort restarts the idle process with the new flag.
+	// Changing effort is applied in place: the process keeps running and the
+	// next turn uses the new level, so nothing is interrupted or restarted.
 	if code, _ := e.do(t, "alice", "test-pass-1", "PATCH", base, map[string]any{"effort": "bogus"}); code != 400 {
 		t.Fatalf("bogus effort: %d", code)
 	}
 	if code, _ := e.do(t, "alice", "test-pass-1", "PATCH", base, map[string]any{"effort": "max"}); code != 200 {
 		t.Fatal("patch effort")
 	}
+	if code, _ := e.do(t, "alice", "test-pass-1", "PATCH", base, map[string]any{"ultracode": true}); code != 200 {
+		t.Fatal("patch ultracode")
+	}
+	if got := e.status(t, "alice", id); got != "idle" {
+		t.Fatalf("process should stay up, status %s", got)
+	}
+	argv, _ := os.ReadFile(e.args)
+	if !strings.Contains(string(argv), "--effort high") || strings.Contains(string(argv), "--effort max") {
+		t.Fatalf("effort must not restart the process: %s", argv)
+	}
+	if !strings.Contains(string(argv), `"effortLevel":"max"`) || !strings.Contains(string(argv), `"ultracode":true`) {
+		t.Fatalf("apply_flag_settings not sent: %s", argv)
+	}
+	_, sv := e.do(t, "alice", "test-pass-1", "GET", base, nil)
+	if sv["effort"] != "max" || sv["ultracode"] != true {
+		t.Fatalf("settings not stored: %v", sv)
+	}
+
+	// After a restart the saved values come back as flags.
+	e.do(t, "alice", "test-pass-1", "POST", base+"/stop", map[string]any{})
 	waitFor(t, "stopped", func() bool { return e.status(t, "alice", id) == "stopped" })
 	e.do(t, "alice", "test-pass-1", "POST", base+"/messages", map[string]any{"text": "again"})
 	waitFor(t, "idle", func() bool { return e.status(t, "alice", id) == "idle" })
-	argv, _ := os.ReadFile(e.args)
-	if !strings.Contains(string(argv), "--effort high") || !strings.Contains(string(argv), "--effort max") {
-		t.Fatalf("effort flags missing: %s", argv)
+	argv, _ = os.ReadFile(e.args)
+	if !strings.Contains(string(argv), "--effort max") || !strings.Contains(string(argv), `--settings {"ultracode":true}`) {
+		t.Fatalf("saved settings not passed on restart: %s", argv)
+	}
+}
+
+func TestModelsAndDefaultMode(t *testing.T) {
+	e := newEnv(t)
+	_, v := e.do(t, "alice", "test-pass-1", "POST", "/api/sessions", map[string]any{})
+	if v["permissionMode"] != "auto" {
+		t.Fatalf("new sessions should default to auto: %v", v["permissionMode"])
+	}
+	code, m := e.do(t, "alice", "test-pass-1", "GET", "/api/models", nil)
+	list, _ := m["models"].([]any)
+	if code != 200 || len(list) != 2 {
+		t.Fatalf("models: %d %v", code, m)
+	}
+	if lv := list[0].(map[string]any)["effortLevels"].([]any); len(lv) != 4 {
+		t.Fatalf("effort levels should drop unknown ones: %v", lv)
+	}
+	if lv := list[1].(map[string]any)["effortLevels"].([]any); len(lv) != 0 {
+		t.Fatalf("a model without effort support offers none: %v", lv)
 	}
 }
 

@@ -52,9 +52,6 @@
         <div id="meta"></div>
       </div>
       <span id="status" class="chip"></span>
-      <select id="model" title="模型"></select>
-      <select id="effort" title="推理强度 (effort)"></select>
-      <select id="mode" title="权限模式"></select>
       <button id="btn-int" title="中断当前回合 (Esc)">中断</button>
       <button id="btn-stop" class="ghost" title="结束后台进程（会话可恢复）">停止进程</button>
       <button id="btn-del" class="ghost danger" title="删除会话">删除</button>
@@ -77,8 +74,14 @@
           <textarea id="input" rows="1" placeholder="给 Claude 发消息…"></textarea>
           <button type="submit" class="primary" id="btn-send" title="发送 (Enter)" aria-label="发送">↑</button>
         </div>
+        <div class="orow">
+          <button type="button" class="optchip" id="opt-model" title="模型与思考强度" aria-haspopup="true"></button>
+          <span class="grow"></span>
+          <button type="button" class="optchip" id="opt-mode" title="权限模式与选项 (Shift+Tab 切换模式)" aria-haspopup="true"></button>
+        </div>
+        <div id="opts" class="pop" hidden></div>
       </div>
-      <div class="hint">Enter 发送 · Shift+Enter 换行 · / 命令 · Esc 中断 · 可粘贴或拖入文件</div>
+      <div class="hint">Enter 发送 · Shift+Enter 换行 · Shift+Tab 切换模式 · / 命令 · Esc 中断 · 可粘贴或拖入文件</div>
     </form>
     <div id="empty">
       <div class="logo">✻</div>
@@ -100,7 +103,7 @@
     <label>模型
       <select id="n-model"></select>
     </label>
-    <label>推理强度 (effort)
+    <label>思考强度
       <select id="n-effort"></select>
     </label>
     <label>权限模式<select id="n-mode"></select></label>

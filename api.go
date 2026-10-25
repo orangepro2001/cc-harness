@@ -21,12 +21,13 @@ type API struct {
 	auth *Auth
 	mgr  *Manager
 
-	usage *usageCache
-	term  *Terminals
+	usage  *usageCache
+	models *modelsCache
+	term   *Terminals
 }
 
 func NewAPI(cfg Config, auth *Auth, mgr *Manager) *API {
-	return &API{cfg: cfg, auth: auth, mgr: mgr, term: NewTerminals(cfg), usage: &usageCache{http: &http.Client{Timeout: 10 * time.Second}}}
+	return &API{cfg: cfg, auth: auth, mgr: mgr, term: NewTerminals(cfg), usage: &usageCache{http: &http.Client{Timeout: 10 * time.Second}}, models: &modelsCache{}}
 }
 
 type authed func(w http.ResponseWriter, r *http.Request, user string)
@@ -93,6 +94,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/me", a.require(a.me))
 
 	mux.HandleFunc("GET /api/usage", a.require(a.getUsage))
+	mux.HandleFunc("GET /api/models", a.require(a.getModels))
 
 	mux.HandleFunc("GET /api/client/android/latest", a.require(a.latestRelease))
 	mux.HandleFunc("GET /api/client/android/download", a.require(a.downloadRelease))
@@ -275,6 +277,7 @@ func (a *API) patchSession(w http.ResponseWriter, r *http.Request, s *Session) {
 		PermissionMode *string `json:"permissionMode"`
 		Model          *string `json:"model"`
 		Effort         *string `json:"effort"`
+		Ultracode      *bool   `json:"ultracode"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -300,6 +303,12 @@ func (a *API) patchSession(w http.ResponseWriter, r *http.Request, s *Session) {
 	}
 	if req.Effort != nil {
 		if err := s.SetEffort(*req.Effort); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if req.Ultracode != nil {
+		if err := s.SetUltracode(*req.Ultracode); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
