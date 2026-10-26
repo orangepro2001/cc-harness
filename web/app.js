@@ -185,8 +185,15 @@ function nearBottom() {
   return l.scrollHeight - l.scrollTop - l.clientHeight < 80;
 }
 function toBottom() { $("log").scrollTop = $("log").scrollHeight; }
+// While a session's history is replaying (and images/layout settle) keep pinned to the
+// bottom; any touch/wheel/key scroll by the user releases the pin.
+let pinUntil = 0;
+function pinned() { return Date.now() < pinUntil; }
+for (const t of ["wheel", "touchstart", "keydown"]) $("log").addEventListener(t, () => { pinUntil = 0; }, { passive: true });
+$("wrap").addEventListener("load", () => { if (pinned()) toBottom(); }, true);
 function add(node) {
-  const stick = nearBottom();
+  const stick = pinned() || nearBottom();
+  if (pinned()) pinUntil = Date.now() + 1500;
   $("wrap").appendChild(node);
   if (stick) toBottom();
   else $("jump").hidden = false;
@@ -494,6 +501,7 @@ function openSession(id) {
   toggleOpts("");
   loadCommands(id);
   $("wrap").textContent = "";
+  pinUntil = Date.now() + 3000;
   $("jump").hidden = true;
   $("empty").hidden = true;
   resetActivity();

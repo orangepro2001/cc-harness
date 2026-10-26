@@ -374,7 +374,8 @@ private fun MessageList(
         snapshotFlow { listState.isScrollInProgress }.filter { !it }.collect { stick = !listState.canScrollForward }
     }
     LaunchedEffect(total, state.liveText.length) {
-        if (stick && total > 0) listState.scrollToItem(total - 1)
+        // A huge offset is clamped to the end, so a tall last item shows its bottom, not its top.
+        if (stick && total > 0) listState.scrollToItem(total - 1, Int.MAX_VALUE)
     }
 
     Box(modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
